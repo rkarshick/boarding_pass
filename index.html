@@ -1,0 +1,809 @@
+<!-- FILE: index.html  (Boarding Pass Kiosk / GitHub Pages repo) -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>BoardPass Printer — Kiosk</title>
+<style>
+  :root{
+    --border:#ddd; --ink:#0b0b0b; --muted:#666; --card:#f7f7f7; --ok:#0a7a2f; --warn:#b45a00; --err:#b00020;
+    --shadow: 0 2px 14px rgba(0,0,0,.06);
+  }
+  html,body{ margin:0; padding:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#fff; color:var(--ink); }
+  main{ padding:16px; max-width:1200px; margin:auto; }
+  h1{ margin: 10px 0 4px; font-size: 26px; }
+  h2{ margin: 8px 0 10px; font-size: 18px; color:#111; }
+  .sub{ color:var(--muted); margin:0 0 14px; }
+  .banner{
+    padding:10px 12px; border-radius:10px; border:1px solid var(--border);
+    background:#f5f7ff; box-shadow: var(--shadow); font-size:14px; word-break:break-word;
+  }
+  .banner.ok{ background:#eef8d6; border-color:#cde59e; }
+  .banner.warn{ background:#fff4e5; border-color:#ffd59a; }
+  .banner.err{ background:#ffe8ea; border-color:#ffb7bf; }
+  #stage{ position:relative; margin-top:12px; }
+  #cam, #preview{
+    width:100%; max-height:56vh; object-fit:cover; border-radius:14px; background:#000; display:block;
+    border:1px solid rgba(0,0,0,.08);
+  }
+  #preview{ display:none; object-fit:contain; background:#000; }
+  .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:10px 0; }
+  button{
+    padding:10px 14px; border-radius:12px; border:1px solid #999; background:#fff; cursor:pointer; font-size:16px;
+    box-shadow: 0 1px 8px rgba(0,0,0,.04);
+  }
+  button:disabled{ opacity:.45; cursor:not-allowed; }
+  input[type=file]{ font-size:14px; }
+  .panel{
+    background:#fafafa; border:1px solid var(--border); border-radius:12px; padding:12px; font-size:13px; box-shadow: var(--shadow);
+  }
+  .kv{ display:grid; grid-template-columns: 170px 1fr; gap:8px 10px; align-items:center; }
+  .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .grid{
+    display:grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap:12px;
+  }
+  @media (max-width: 950px){
+    .grid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 640px){
+    .grid{ grid-template-columns: 1fr; }
+  }
+  .slot{
+    border:1px solid var(--border); border-radius:14px; padding:12px; background:var(--card); box-shadow: var(--shadow);
+    display:grid; grid-template-columns: 110px 1fr; gap:10px; align-items:center;
+    min-height: 124px;
+  }
+  .thumb{
+    width:110px; height:110px; border-radius:12px; background:#111; object-fit:cover; display:block;
+    border:1px solid rgba(255,255,255,.08);
+  }
+  .slotMeta{ display:flex; flex-direction:column; gap:8px; }
+  .slotTop{ display:flex; justify-content:space-between; gap:10px; align-items:center; }
+  .pill{
+    font-size:12px; padding:3px 8px; border-radius:999px; border:1px solid rgba(0,0,0,.12); background:#fff;
+  }
+  .pill.seat{ font-weight:700; }
+  .pill.empty{ background:#fff; color:var(--muted); }
+  label{ font-size:12px; color:var(--muted); display:block; margin-bottom:4px; }
+  input[type=text], select{
+    width:100%; padding:9px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.18); font-size:14px; background:#fff;
+  }
+  .tiny{ font-size:12px; color:var(--muted); }
+  .hr{ height:1px; background:rgba(0,0,0,.08); margin:10px 0; }
+  .linkLine{ font-size:13px; color:var(--muted); }
+  .linkLine a{ color:#0a53b0; text-decoration:none; }
+  .linkLine a:hover{ text-decoration:underline; }
+</style>
+</head>
+<body>
+<main>
+  <div class="banner" id="status">⏳ waiting…</div>
+
+  <h1 id="title">HiddenRift Airways — BoardPass Printer</h1>
+  <p class="sub">Snap a group photo → auto-detect faces (max 6) → optionally enter names → generate a printable Letter PDF (6 passes per page) → upload as the “latest”.</p>
+
+  <div class="panel">
+    <div class="kv">
+      <div>Cloud Run Base</div><div class="mono" id="baseUrl">—</div>
+      <div>Latest BoardPass PDF</div><div class="linkLine"><a id="latestLink" href="#" target="_blank" rel="noreferrer">—</a> <span class="tiny">(use this for the room QR)</span></div>
+      <div>Flight / Gate</div><div><span class="mono" id="flightGate">—</span></div>
+      <div>Boarding time</div><div><span class="mono" id="boardingCfg">—</span></div>
+    </div>
+  </div>
+
+  <div id="stage">
+    <video id="cam" playsinline muted></video>
+    <img id="preview" alt="snapshot preview"/>
+  </div>
+
+  <div class="row">
+    <button id="start">Start Camera</button>
+    <button id="snap" disabled>Snap Photo</button>
+    <input type="file" id="file" accept="image/*"/>
+    <button id="detect" disabled>Detect Passengers</button>
+    <button id="retake" disabled>Retake</button>
+  </div>
+
+  <div class="panel">
+    <div class="kv">
+      <div>Image (w×h)</div><div><span id="dims" class="mono">—</span></div>
+      <div>Faces found</div><div><span id="faces" class="mono">—</span></div>
+      <div>Seat map</div><div><span class="mono">1A, 1B, 2A, 2B, 3A, 3B</span></div>
+
+      <div>QR on passes</div>
+      <div>
+        <label style="display:flex; gap:8px; align-items:center; margin:0;">
+          <input type="checkbox" id="useQr" checked />
+          <span>Include QR (encodes passenger + seat + flight + optional puzzle code)</span>
+        </label>
+        <div class="tiny">Tip: keep the room QR pointing at the “Latest BoardPass PDF” link above.</div>
+      </div>
+
+      <div>Puzzle code (optional)</div>
+      <div>
+        <input type="text" id="puzzleCode" placeholder="e.g., RIFT-LOCK-8127 (optional)"/>
+        <div class="tiny">If set, it’s included inside each pass QR payload.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hr"></div>
+  <h2>Passengers (max 6)</h2>
+  <div class="grid" id="slots"></div>
+
+  <div class="row">
+    <button id="make" disabled>Generate BoardPass PDF</button>
+  </div>
+
+  <div class="tiny">
+    Workflow: Start Camera → Snap → Detect → (optional names) → Generate → auto-download + upload as latest.
+  </div>
+</main>
+
+<!-- pdf-lib for PDF export -->
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<!-- QR generator -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+
+<script>
+/*** CONFIG ***/
+const CLOUD_RUN_BASE = "https://alien-face-service-791433334355.us-east4.run.app";
+const DETECT_ENDPOINT = CLOUD_RUN_BASE + "/detectFaces";
+const UPLOAD_ENDPOINT = CLOUD_RUN_BASE + "/uploadPdfDirect";
+
+// ✅ CHANGE: BoardPass naming
+const LATEST_BOARDPASS_URL = CLOUD_RUN_BASE + "/boardpass_current";
+const TARGET_OBJECT_NAME = "boardpass_current.pdf";
+
+const MAX_PASSES = 6;
+const SEATS = ["1A","1B","2A","2B","3A","3B"];
+
+// Branding / content
+const AIRLINE_NAME = "HiddenRift Airways";
+const AIRLINE_CODE = "HR";
+const FLIGHT_NUM = "HR-876";     // change as desired
+const GATE = "RIFT-3";           // change as desired
+
+// Boarding time behavior
+const BOARDING_MODE = "NOW_PLUS_MIN"; // "NOW_PLUS_MIN" or "FIXED"
+const BOARDING_OFFSET_MIN = 10;       // used when NOW_PLUS_MIN
+const BOARDING_FIXED_TEXT = "6:10 PM"; // used when FIXED
+
+// Face crop tuning (similar vibe to your menu app)
+const FACE_W_MULT = 2.0;   // expand around face box
+const FACE_H_MULT = 2.2;
+const FACE_Y_SHIFT = 0.65; // shift crop upward (headroom)
+
+/*** DOM refs ***/
+const statusEl = document.getElementById("status");
+const baseUrlEl = document.getElementById("baseUrl");
+const latestLink = document.getElementById("latestLink");
+const flightGateEl = document.getElementById("flightGate");
+const boardingCfgEl = document.getElementById("boardingCfg");
+
+const video = document.getElementById("cam");
+const preview = document.getElementById("preview");
+const startBtn = document.getElementById("start");
+const snapBtn = document.getElementById("snap");
+const detectBtn = document.getElementById("detect");
+const retakeBtn = document.getElementById("retake");
+const fileIn = document.getElementById("file");
+const makeBtn = document.getElementById("make");
+
+const dimsEl = document.getElementById("dims");
+const facesEl = document.getElementById("faces");
+const slotsEl = document.getElementById("slots");
+
+const useQrEl = document.getElementById("useQr");
+const puzzleCodeEl = document.getElementById("puzzleCode");
+
+/*** State ***/
+let snapshotImg = null;     // Image()
+let snapshotDataUrl = null; // data:image/jpeg;base64,...
+let faceRects = [];         // [{x,y,w,h}]
+let slots = [];             // [{ seat, name, role, faceCanvas }]
+
+/*** Init UI ***/
+baseUrlEl.textContent = CLOUD_RUN_BASE;
+latestLink.href = LATEST_BOARDPASS_URL;
+latestLink.textContent = LATEST_BOARDPASS_URL;
+flightGateEl.textContent = `${FLIGHT_NUM}  |  Gate ${GATE}`;
+boardingCfgEl.textContent = (BOARDING_MODE === "NOW_PLUS_MIN")
+  ? `Auto: now + ${BOARDING_OFFSET_MIN} min`
+  : `Fixed: ${BOARDING_FIXED_TEXT}`;
+
+renderEmptySlots();
+
+/*** Helpers ***/
+function setBanner(type, msg){
+  statusEl.className = "banner" + (type ? " " + type : "");
+  statusEl.textContent = msg;
+  console.log("[status]", type, msg);
+}
+function setDims(w,h){ dimsEl.textContent = `${w}×${h}`; }
+function setFaces(n){ facesEl.textContent = String(n); }
+
+function stopCamera(){
+  const s = video.srcObject;
+  if (s && s.getTracks) s.getTracks().forEach(t => t.stop());
+  video.srcObject = null;
+}
+
+function fmtTime(d){
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+function getBoardingTimeText(){
+  if (BOARDING_MODE === "FIXED") return BOARDING_FIXED_TEXT;
+  const d = new Date(Date.now() + BOARDING_OFFSET_MIN * 60 * 1000);
+  return fmtTime(d);
+}
+
+function blobToBase64(blob){
+  return new Promise((resolve,reject)=>{
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1]);
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
+}
+
+async function imageToBase64NoPrefix(imgEl){
+  const c = document.createElement("canvas");
+  const w = imgEl.naturalWidth || imgEl.width;
+  const h = imgEl.naturalHeight || imgEl.height;
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(imgEl, 0, 0, w, h);
+  return c.toDataURL("image/jpeg", 0.95).split(",")[1];
+}
+
+function clamp(n, min, max){ return Math.max(min, Math.min(max, n)); }
+
+function cropFaceToCanvas(imgEl, rect, outW=520, outH=520){
+  const imgW = imgEl.naturalWidth || imgEl.width;
+  const imgH = imgEl.naturalHeight || imgEl.height;
+
+  const cx = rect.x + rect.w/2;
+  const cy = rect.y + rect.h/2;
+
+  const newW = rect.w * FACE_W_MULT;
+  const newH = rect.h * FACE_H_MULT;
+
+  let x = Math.floor(cx - newW/2);
+  let y = Math.floor(cy - newH * FACE_Y_SHIFT);
+
+  x = clamp(x, 0, imgW - 1);
+  y = clamp(y, 0, imgH - 1);
+
+  let w = Math.floor(Math.min(newW, imgW - x));
+  let h = Math.floor(Math.min(newH, imgH - y));
+
+  w = Math.max(2, w);
+  h = Math.max(2, h);
+
+  const srcAspect = w / h;
+  const dstAspect = outW / outH;
+
+  let sx = x, sy = y, sw = w, sh = h;
+  if (srcAspect > dstAspect){
+    const targetW = Math.floor(h * dstAspect);
+    sx = Math.floor(x + (w - targetW)/2);
+    sw = targetW;
+  } else {
+    const targetH = Math.floor(w / dstAspect);
+    sy = Math.floor(y + (h - targetH)/2);
+    sh = targetH;
+  }
+
+  sx = clamp(sx, 0, imgW-1);
+  sy = clamp(sy, 0, imgH-1);
+  sw = clamp(sw, 2, imgW - sx);
+  sh = clamp(sh, 2, imgH - sy);
+
+  const c = document.createElement("canvas");
+  c.width = outW; c.height = outH;
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(imgEl, sx, sy, sw, sh, 0, 0, outW, outH);
+  return c;
+}
+
+function renderEmptySlots(){
+  slotsEl.innerHTML = "";
+  for (let i=0;i<MAX_PASSES;i++){
+    const seat = SEATS[i];
+    const div = document.createElement("div");
+    div.className = "slot";
+    div.innerHTML = `
+      <img class="thumb" alt="empty" src="data:image/svg+xml;utf8,
+        <svg xmlns='http://www.w3.org/2000/svg' width='110' height='110'>
+          <rect width='100%25' height='100%25' fill='%23111'/>
+          <text x='50%25' y='52%25' dominant-baseline='middle' text-anchor='middle'
+                fill='%23999' font-family='system-ui' font-size='12'>EMPTY</text>
+        </svg>"/>
+      <div class="slotMeta">
+        <div class="slotTop">
+          <span class="pill seat">Seat ${seat}</span>
+          <span class="pill empty">No face</span>
+        </div>
+        <div>
+          <label>Passenger name</label>
+          <input type="text" disabled placeholder="Detect faces first"/>
+        </div>
+        <div>
+          <label>Role (optional)</label>
+          <select disabled>
+            <option>Passenger</option>
+          </select>
+        </div>
+      </div>
+    `;
+    slotsEl.appendChild(div);
+  }
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, (c)=>({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
+  }[c]));
+}
+
+function renderSlots(){
+  slotsEl.innerHTML = "";
+  for (let i=0;i<MAX_PASSES;i++){
+    const seat = SEATS[i];
+    const s = slots[i] || null;
+    const div = document.createElement("div");
+    div.className = "slot";
+
+    const thumbSrc = s ? s.faceCanvas.toDataURL("image/png") : `data:image/svg+xml;utf8,
+      <svg xmlns='http://www.w3.org/2000/svg' width='110' height='110'>
+        <rect width='100%25' height='100%25' fill='%23111'/>
+        <text x='50%25' y='52%25' dominant-baseline='middle' text-anchor='middle'
+              fill='%23999' font-family='system-ui' font-size='12'>EMPTY</text>
+      </svg>`;
+
+    div.innerHTML = `
+      <img class="thumb" alt="face" src="${thumbSrc}"/>
+      <div class="slotMeta">
+        <div class="slotTop">
+          <span class="pill seat">Seat ${seat}</span>
+          <span class="pill ${s ? "" : "empty"}">${s ? "Detected" : "No face"}</span>
+        </div>
+        <div>
+          <label>Passenger name</label>
+          <input type="text" data-idx="${i}" class="nameIn" placeholder="${s ? ("PASSENGER " + (i+1)) : "Detect faces first"}" ${s ? "" : "disabled"} value="${s && s.name ? escapeHtml(s.name) : ""}"/>
+        </div>
+        <div>
+          <label>Role (optional)</label>
+          <select data-idx="${i}" class="roleSel" ${s ? "" : "disabled"}>
+            <option value="Passenger">Passenger</option>
+            <option value="Pilot">Pilot</option>
+            <option value="Co-Pilot">Co-Pilot</option>
+            <option value="Engineer">Engineer</option>
+          </select>
+        </div>
+      </div>
+    `;
+    slotsEl.appendChild(div);
+
+    if (s && s.role){
+      div.querySelector(".roleSel").value = s.role;
+    }
+  }
+
+  document.querySelectorAll(".nameIn").forEach(inp=>{
+    inp.addEventListener("input", (e)=>{
+      const idx = parseInt(e.target.getAttribute("data-idx"), 10);
+      if (!slots[idx]) return;
+      slots[idx].name = e.target.value;
+    });
+  });
+  document.querySelectorAll(".roleSel").forEach(sel=>{
+    sel.addEventListener("change", (e)=>{
+      const idx = parseInt(e.target.getAttribute("data-idx"), 10);
+      if (!slots[idx]) return;
+      slots[idx].role = e.target.value;
+    });
+  });
+
+  makeBtn.disabled = !slots.some(s => !!s);
+}
+
+/*** Camera / file ***/
+startBtn.onclick = async () => {
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode:"environment", width:{ideal:1280}, height:{ideal:720} },
+      audio:false
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    snapBtn.disabled = false;
+    detectBtn.disabled = true;
+    retakeBtn.disabled = true;
+    makeBtn.disabled = true;
+
+    preview.style.display = "none";
+    video.style.display = "block";
+
+    setBanner("", "🎥 camera ready — line everyone up and snap");
+  }catch(e){
+    console.error("getUserMedia error", e);
+    setBanner("err", "⚠️ Camera blocked. Use HTTPS (GitHub Pages) and allow camera permissions, or use file upload.");
+  }
+};
+
+snapBtn.onclick = async () => {
+  if (!video.srcObject){
+    setBanner("warn", "Start camera first (or use file upload).");
+    return;
+  }
+  const c = document.createElement("canvas");
+  const W = video.videoWidth;
+  const H = video.videoHeight;
+  c.width = W; c.height = H;
+  c.getContext("2d").drawImage(video, 0, 0, W, H);
+
+  snapshotDataUrl = c.toDataURL("image/jpeg", 0.95);
+  preview.src = snapshotDataUrl;
+
+  snapshotImg = new Image();
+  snapshotImg.onload = () => setDims(snapshotImg.naturalWidth, snapshotImg.naturalHeight);
+  snapshotImg.src = snapshotDataUrl;
+
+  video.style.display = "none";
+  preview.style.display = "block";
+
+  detectBtn.disabled = false;
+  retakeBtn.disabled = false;
+  makeBtn.disabled = true;
+
+  setBanner("", "📸 snapshot captured — click Detect Passengers");
+};
+
+fileIn.onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+
+  stopCamera();
+
+  const url = URL.createObjectURL(f);
+  const img = new Image();
+  img.onload = async () => {
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    c.getContext("2d").drawImage(img, 0, 0);
+
+    snapshotDataUrl = c.toDataURL("image/jpeg", 0.95);
+    preview.src = snapshotDataUrl;
+
+    snapshotImg = new Image();
+    snapshotImg.onload = () => setDims(snapshotImg.naturalWidth, snapshotImg.naturalHeight);
+    snapshotImg.src = snapshotDataUrl;
+
+    video.style.display = "none";
+    preview.style.display = "block";
+
+    detectBtn.disabled = false;
+    retakeBtn.disabled = false;
+    makeBtn.disabled = true;
+
+    setBanner("", "🖼️ image loaded — click Detect Passengers");
+  };
+  img.src = url;
+};
+
+retakeBtn.onclick = () => {
+  snapshotImg = null;
+  snapshotDataUrl = null;
+  faceRects = [];
+  slots = [];
+  dimsEl.textContent = "—";
+  facesEl.textContent = "—";
+  renderEmptySlots();
+  makeBtn.disabled = true;
+  detectBtn.disabled = true;
+  retakeBtn.disabled = true;
+
+  preview.style.display = "none";
+  video.style.display = "block";
+
+  setBanner("", "Retake ready — snap a new photo");
+};
+
+/*** Face detection ***/
+async function detectFacesCloud(imgEl){
+  const base64Data = await imageToBase64NoPrefix(imgEl);
+  const res = await fetch(DETECT_ENDPOINT, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ imageBase64: base64Data })
+  });
+
+  const text = await res.text();
+  if (!res.ok){
+    console.error("detectFaces error", res.status, text);
+    throw new Error("detectFaces failed: " + res.status);
+  }
+
+  let json;
+  try{ json = JSON.parse(text); }
+  catch(e){ throw new Error("bad JSON from /detectFaces"); }
+
+  return (json.faces || []).slice().sort((a,b)=>a.x-b.x);
+}
+
+detectBtn.onclick = async () => {
+  try{
+    if (!snapshotImg){
+      setBanner("warn", "Take a photo or choose a file first.");
+      return;
+    }
+    await snapshotImg.decode();
+
+    setBanner("", "🔍 detecting faces…");
+    faceRects = await detectFacesCloud(snapshotImg);
+
+    if (!faceRects.length){
+      setFaces(0);
+      slots = [];
+      renderEmptySlots();
+      makeBtn.disabled = true;
+      setBanner("err", "⚠️ 0 faces detected — please retake with faces larger, brighter, and centered (no fallback in airplane room).");
+      return;
+    }
+
+    faceRects = faceRects.slice(0, MAX_PASSES);
+    setFaces(faceRects.length);
+
+    slots = [];
+    for (let i=0;i<MAX_PASSES;i++){
+      if (!faceRects[i]) { slots.push(null); continue; }
+      const faceCanvas = cropFaceToCanvas(snapshotImg, faceRects[i], 520, 520);
+      slots.push({
+        seat: SEATS[i],
+        name: "",
+        role: "Passenger",
+        faceCanvas
+      });
+    }
+
+    renderSlots();
+    setBanner("ok", `✅ detected ${faceRects.length} passenger(s) — enter names (optional) then Generate`);
+  }catch(e){
+    console.error(e);
+    setBanner("err", "⚠️ detection failed — retake and try again.");
+  }
+};
+
+/*** PDF generation ***/
+async function canvasToPngBytes(canvas){
+  const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
+  return await blob.arrayBuffer();
+}
+
+async function makeQrPngBytes(payload){
+  try{
+    if (!window.QRCode || !QRCode.toDataURL) return null;
+    const dataUrl = await QRCode.toDataURL(payload, {
+      errorCorrectionLevel: "M",
+      margin: 1,
+      width: 256
+    });
+    const b64 = dataUrl.split(",")[1];
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
+  }catch(e){
+    console.warn("QR generation failed", e);
+    return null;
+  }
+}
+
+function buildQrPayload(passengerName, seat, role){
+  const puzzle = (puzzleCodeEl.value || "").trim();
+  const boardingTime = getBoardingTimeText();
+  const ts = new Date().toISOString();
+  const parts = ["BP", FLIGHT_NUM, seat, passengerName, role, boardingTime];
+  if (puzzle) parts.push(puzzle);
+  parts.push(ts);
+  return parts.join("|");
+}
+
+async function buildBoardPassPdfBytes(){
+  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const pdf = await PDFDocument.create();
+
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const fontB = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  // US Letter
+  const pageW = 612;
+  const pageH = 792;
+  const page = pdf.addPage([pageW, pageH]);
+
+  // 2 cols x 3 rows = 6 passes per page (single page max)
+  const margin = 24;
+  const gapX = 12;
+  const gapY = 12;
+
+  const cellW = (pageW - margin*2 - gapX) / 2;
+  const cellH = (pageH - margin*2 - gapY*2) / 3;
+
+  page.drawRectangle({ x:0, y:0, width:pageW, height:pageH, color: rgb(1,1,1) });
+
+  const includeQr = !!useQrEl.checked;
+
+  for (let i=0;i<MAX_PASSES;i++){
+    const s = slots[i];
+    if (!s) continue;
+
+    const col = i % 2;
+    const row = Math.floor(i / 2); // 0,1,2
+    const x = margin + col * (cellW + gapX);
+    const y = pageH - margin - (row+1) * cellH - row * gapY;
+
+    // border
+    page.drawRectangle({
+      x, y, width: cellW, height: cellH,
+      borderColor: rgb(0.15,0.15,0.15),
+      borderWidth: 1
+    });
+
+    // header
+    const headerH = 40;
+    page.drawRectangle({ x, y: y + cellH - headerH, width: cellW, height: headerH });
+
+    page.drawText(AIRLINE_NAME.toUpperCase(), {
+      x: x + 12, y: y + cellH - 26, size: 12, font: fontB, color: rgb(0.08,0.08,0.08)
+    });
+    page.drawText("BOARDPASS", {
+      x: x + cellW - 12 - fontB.widthOfTextAtSize("BOARDPASS", 12),
+      y: y + cellH - 26,
+      size: 12, font: fontB, color: rgb(0.08,0.08,0.08)
+    });
+
+    // inner layout
+    const pad = 12;
+    const innerX = x + pad;
+    const innerY = y + pad;
+    const innerW = cellW - pad*2;
+    const innerH = cellH - headerH - pad*2;
+
+    // face
+    const faceSize = 110;
+    const faceX = innerX;
+    const faceY = innerY + innerH - faceSize;
+
+    const faceBytes = await canvasToPngBytes(s.faceCanvas);
+    const faceImg = await pdf.embedPng(faceBytes);
+    page.drawRectangle({ x: faceX - 1, y: faceY - 1, width: faceSize + 2, height: faceSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1 });
+    page.drawImage(faceImg, { x: faceX, y: faceY, width: faceSize, height: faceSize });
+
+    // text
+    const passengerName = (s.name && s.name.trim()) ? s.name.trim() : `PASSENGER ${i+1}`;
+    const role = s.role || "Passenger";
+    const seat = s.seat || SEATS[i];
+    const boardingTime = getBoardingTimeText();
+
+    const infoX = faceX + faceSize + 12;
+    const infoTopY = faceY + faceSize;
+
+    const maxNameWidth = innerX + innerW - infoX;
+    let nameText = passengerName.toUpperCase();
+    while (fontB.widthOfTextAtSize(nameText, 16) > maxNameWidth && nameText.length > 6){
+      nameText = nameText.slice(0, -2) + "…";
+    }
+    page.drawText(nameText, { x: infoX, y: infoTopY - 18, size: 16, font: fontB, color: rgb(0.05,0.05,0.05) });
+    page.drawText(role.toUpperCase(), { x: infoX, y: infoTopY - 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
+
+    const lineH = 14;
+    let yy = infoTopY - 56;
+    const field = (k,v) => {
+      page.drawText(k, { x: infoX, y: yy, size: 10, font, color: rgb(0.35,0.35,0.35) });
+      page.drawText(v, { x: infoX + 70, y: yy, size: 11, font: fontB, color: rgb(0.08,0.08,0.08) });
+      yy -= lineH;
+    };
+    field("FLIGHT", FLIGHT_NUM);
+    field("GATE", GATE);
+    field("BOARD", boardingTime);
+    field("SEAT", seat);
+
+    page.drawRectangle({ x: innerX, y: innerY + 70, width: innerW, height: 1, borderColor: rgb(0.85,0.85,0.85), borderWidth: 1 });
+
+    const codeLabelY = innerY + 52;
+    const codePayload = buildQrPayload(passengerName, seat, role);
+    const shortCode = `${AIRLINE_CODE}-${seat}-${String(i+1).padStart(2,"0")}`;
+
+    page.drawText("CODE", { x: innerX, y: codeLabelY, size: 9, font, color: rgb(0.35,0.35,0.35) });
+    page.drawText(shortCode, { x: innerX + 42, y: codeLabelY, size: 12, font: fontB, color: rgb(0.08,0.08,0.08) });
+
+    const puzzle = (puzzleCodeEl.value || "").trim();
+    if (puzzle){
+      page.drawText("PUZZLE", { x: innerX, y: innerY + 34, size: 9, font, color: rgb(0.35,0.35,0.35) });
+      page.drawText(puzzle, { x: innerX + 42, y: innerY + 34, size: 11, font: fontB, color: rgb(0.08,0.08,0.08) });
+    }
+
+    if (includeQr){
+      const qrBytes = await makeQrPngBytes(codePayload);
+      if (qrBytes){
+        const qr = await pdf.embedPng(qrBytes);
+        const qrSize = 72;
+        const qrX = innerX + innerW - qrSize;
+        const qrY = innerY + 10;
+        page.drawRectangle({ x: qrX - 1, y: qrY - 1, width: qrSize + 2, height: qrSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1 });
+        page.drawImage(qr, { x: qrX, y: qrY, width: qrSize, height: qrSize });
+      }
+    }
+
+    page.drawText("Valid for immediate boarding — keep this pass visible.", {
+      x: innerX, y: innerY + 10, size: 8, font, color: rgb(0.45,0.45,0.45)
+    });
+  }
+
+  return await pdf.save();
+}
+
+/*** Upload ***/
+async function uploadPdfDirectToCloudRun(pdfBlob){
+  setBanner("", "☁ uploading boardpass_current.pdf…");
+  const pdfBase64 = await blobToBase64(pdfBlob);
+
+  const res = await fetch(UPLOAD_ENDPOINT, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({
+      pdfBase64,
+      objectName: TARGET_OBJECT_NAME
+    })
+  });
+
+  const txt = await res.text();
+  console.log("[upload] response", res.status, txt);
+
+  if (!res.ok){
+    throw new Error("upload failed: " + res.status + " " + txt);
+  }
+  setBanner("ok", "✅ Uploaded. Latest BoardPass PDF is live at the room QR link.");
+}
+
+/*** Main generate ***/
+makeBtn.onclick = async () => {
+  try{
+    if (!slots.some(s => !!s)){
+      setBanner("warn", "No passengers detected yet. Click Detect Passengers first.");
+      return;
+    }
+
+    setBanner("", "🧾 building PDF…");
+    const pdfBytes = await buildBoardPassPdfBytes();
+    const blob = new Blob([pdfBytes], { type:"application/pdf" });
+
+    await uploadPdfDirectToCloudRun(blob);
+
+    // download for printing
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "boardpass_current.pdf";
+    a.click();
+
+    // open for printing
+    try{ window.open(a.href, "_blank", "noopener,noreferrer"); }catch(e){}
+  }catch(e){
+    console.error(e);
+    setBanner("err", "⚠️ Failed to generate/upload PDF. " + (e.message || ""));
+  }
+};
+
+// initial banner
+setBanner("", "⏳ Ready. Start camera or choose an image.");
+</script>
+</body>
+</html>
