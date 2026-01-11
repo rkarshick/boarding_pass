@@ -38,7 +38,7 @@
   .panel{
     background:#fafafa; border:1px solid var(--border); border-radius:12px; padding:12px; font-size:13px; box-shadow: var(--shadow);
   }
-  .kv{ display:grid; grid-template-columns: 170px 1fr; gap:8px 10px; align-items:center; }
+  .kv{ display:grid; grid-template-columns: 190px 1fr; gap:8px 10px; align-items:center; }
   .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .grid{
     display:grid; grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -86,8 +86,7 @@
       <div>Latest BoardPass PDF</div><div class="linkLine"><a id="latestLink" href="#" target="_blank" rel="noreferrer">—</a></div>
       <div>Flight / Gate</div><div><span class="mono" id="flightGate">—</span></div>
       <div>Boarding time</div><div><span class="mono" id="boardingCfg">—</span></div>
-      <div>Load Capacity Target</div><div><span class="mono" id="loadTargetUi">—</span> <span class="tiny">(players scan each pass QR; add numbers)</span></div>
-      <div>Scan URL</div><div class="mono" id="scanUrlUi">—</div>
+      <div>Load Capacity Target</div><div><span class="mono" id="loadTargetUi">—</span> <span class="tiny">(scan each pass QR, add values)</span></div>
     </div>
   </div>
 
@@ -109,7 +108,7 @@
       <div>Image (w×h)</div><div><span id="dims" class="mono">—</span></div>
       <div>Faces found</div><div><span id="faces" class="mono">—</span></div>
       <div>Seat map</div><div><span class="mono">1A, 1B, 2A, 2B, 3A, 3B</span></div>
-      <div>QR</div><div><span>Always included (labeled <b>LOAD CAPACITY</b>, “scan” under)</span></div>
+      <div>QR</div><div><span>Each ticket includes a <b>LOAD CAPACITY</b> QR that contains only a number.</span></div>
     </div>
   </div>
 
@@ -121,7 +120,7 @@
     <button id="make" disabled>Generate BoardPass PDF</button>
   </div>
 
-  <div class="tiny">Note: add <span class="mono">scan.html</span> to this repo too (provided below) so QR scans always show a big number.</div>
+  <div class="tiny">Tip: most camera/QR apps will display the scanned numeric payload as a big number automatically.</div>
 </main>
 
 <!-- pdf-lib for PDF export -->
@@ -172,7 +171,6 @@ const latestLink = document.getElementById("latestLink");
 const flightGateEl = document.getElementById("flightGate");
 const boardingCfgEl = document.getElementById("boardingCfg");
 const loadTargetUi = document.getElementById("loadTargetUi");
-const scanUrlUi = document.getElementById("scanUrlUi");
 
 const video = document.getElementById("cam");
 const preview = document.getElementById("preview");
@@ -192,7 +190,6 @@ let snapshotImg = null;
 let snapshotDataUrl = null;
 let faceRects = [];
 let slots = []; // [{ seat, name, role, faceCanvas, loadCap }]
-let scanBaseUrl = null;
 
 /*** Init UI ***/
 baseUrlEl.textContent = CLOUD_RUN_BASE;
@@ -203,10 +200,6 @@ boardingCfgEl.textContent = (BOARDING_MODE === "NOW_PLUS_MIN")
   ? `Auto: now ${BOARDING_OFFSET_MIN >= 0 ? "+" : "−"} ${Math.abs(BOARDING_OFFSET_MIN)} min`
   : `Fixed: ${BOARDING_FIXED_TEXT}`;
 loadTargetUi.textContent = String(LOAD_CAP_TARGET);
-
-// scan.html URL (same repo)
-scanBaseUrl = new URL("scan.html", window.location.href).toString();
-scanUrlUi.textContent = scanBaseUrl;
 
 renderEmptySlots();
 setBanner("", "⏳ Ready. Start camera or choose an image.");
@@ -423,9 +416,8 @@ function shuffleInPlace(a){
 }
 function genUniqueSum(n, total, minVal, maxVal){
   if (n <= 0) return [];
-  if (n === 1) return [total];
+  if (n === 1) return [total]; // only one value possible
 
-  // Make sure constraints can work
   if (total < n*minVal) throw new Error("LOAD target too small for min bounds");
   if (total > n*maxVal) throw new Error("LOAD target too large for max bounds");
 
@@ -449,7 +441,6 @@ function genUniqueSum(n, total, minVal, maxVal){
         const cand = randInt(vMin, vMax);
         if (used.has(cand)) continue;
 
-        // If this is the last pick before final remainder, ensure final is valid + unique + not equal
         if (left === 1){
           const last = remaining - cand;
           if (last < minVal || last > maxVal) continue;
@@ -474,13 +465,11 @@ function genUniqueSum(n, total, minVal, maxVal){
     if (used.has(last)) continue;
 
     vals.push(last);
-
     if (new Set(vals).size !== n) continue;
     return shuffleInPlace(vals);
   }
 
-  // Fallback (should basically never hit)
-  // Simple deterministic unique spread
+  // last-resort fallback
   const base = Math.floor(total / n);
   const vals = [];
   let sum = 0;
@@ -489,12 +478,6 @@ function genUniqueSum(n, total, minVal, maxVal){
     sum += base + i;
   }
   vals.push(total - sum);
-  // Ensure uniqueness by nudging last if needed
-  const set = new Set(vals);
-  if (set.size !== n){
-    vals[n-1] += 1;
-    vals[n-2] -= 1;
-  }
   return shuffleInPlace(vals);
 }
 
@@ -648,7 +631,7 @@ detectBtn.onclick = async () => {
     const n = faceRects.length;
     setFaces(n);
 
-    // Generate unique load capacity values that sum to target (random, non-repeating)
+    // Unique load capacity values that sum to target
     const loadVals = genUniqueSum(n, LOAD_CAP_TARGET, LOAD_MIN, LOAD_MAX);
 
     slots = [];
@@ -660,7 +643,7 @@ detectBtn.onclick = async () => {
         name: "",
         role: "Passenger",
         faceCanvas,
-        loadCap: loadVals[i] // <-- key puzzle number
+        loadCap: loadVals[i]
       });
     }
 
@@ -696,13 +679,6 @@ async function makeQrPngBytes(payload){
     console.warn("QR generation failed", e);
     return null;
   }
-}
-
-// Load capacity QR should open a page that shows ONLY the number
-function buildLoadCapacityScanUrl(value){
-  const u = new URL(scanBaseUrl);
-  u.searchParams.set("n", String(value));
-  return u.toString();
 }
 
 // hex -> pdf-lib rgb (0..1)
@@ -828,20 +804,27 @@ async function buildBoardPassPdfBytes(){
     field("BOARD", boardingTime);
     field("SEAT", seat);
 
-    // divider
-    page.drawRectangle({ x: innerX, y: innerY + 86, width: innerW, height: 1, borderColor: rgb(0.88,0.88,0.88), borderWidth: 1 });
+    // ✅ divider line: just below the picture
+    const dividerY = faceY - 10;
+    page.drawRectangle({
+      x: innerX,
+      y: dividerY,
+      width: innerW,
+      height: 1,
+      borderColor: rgb(0.88,0.88,0.88),
+      borderWidth: 1
+    });
 
-    // LOAD CAPACITY QR (URL opens scan.html and shows only the number)
-    const scanUrl = buildLoadCapacityScanUrl(s.loadCap);
-    const qrBytes = await makeQrPngBytes(scanUrl);
+    // ✅ LOAD CAPACITY QR: bottom-right, payload is ONLY the number (no website)
+    const qrPayload = String(s.loadCap); // scanning shows just a number
+    const qrBytes = await makeQrPngBytes(qrPayload);
 
     if (qrBytes){
       const qr = await pdf.embedPng(qrBytes);
       const qrSize = 76;
 
-      // leave room for "LOAD CAPACITY" above + "scan" below
-      const qrX = innerX + innerW - qrSize;
-      const qrY = innerY + 14;
+      const qrX = innerX + innerW - qrSize;  // right align
+      const qrY = innerY + 14;               // bottom area
 
       // label above
       const label = "LOAD CAPACITY";
@@ -853,7 +836,7 @@ async function buildBoardPassPdfBytes(){
         color: rgb(0.35,0.35,0.35)
       });
 
-      // border + image
+      // border + QR
       page.drawRectangle({ x: qrX - 1, y: qrY - 1, width: qrSize + 2, height: qrSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1 });
       page.drawImage(qr, { x: qrX, y: qrY, width: qrSize, height: qrSize });
 
@@ -868,7 +851,7 @@ async function buildBoardPassPdfBytes(){
       });
     }
 
-    // small note
+    // small note (left side, bottom)
     page.drawText("Keep this pass visible.", {
       x: innerX,
       y: innerY + 10,
