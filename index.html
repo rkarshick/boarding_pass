@@ -125,7 +125,8 @@
 
 <!-- pdf-lib for PDF export -->
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-<!-- QR generator -->
+
+<!-- QR generator (reliable) -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode/1.4.4/qrcode.min.js"></script>
 
 <script>
@@ -142,7 +143,6 @@ const SEATS = ["1A","1B","2A","2B","3A","3B"];
 
 // Branding / content
 const AIRLINE_NAME = "HiddenRift Airways";
-const AIRLINE_CODE = "HR";
 const FLIGHT_NUM = "HR-876";
 const GATE = "RIFT-3";
 
@@ -416,7 +416,7 @@ function shuffleInPlace(a){
 }
 function genUniqueSum(n, total, minVal, maxVal){
   if (n <= 0) return [];
-  if (n === 1) return [total]; // only one value possible
+  if (n === 1) return [total];
 
   if (total < n*minVal) throw new Error("LOAD target too small for min bounds");
   if (total > n*maxVal) throw new Error("LOAD target too large for max bounds");
@@ -469,7 +469,7 @@ function genUniqueSum(n, total, minVal, maxVal){
     return shuffleInPlace(vals);
   }
 
-  // last-resort fallback
+  // fallback
   const base = Math.floor(total / n);
   const vals = [];
   let sum = 0;
@@ -631,7 +631,6 @@ detectBtn.onclick = async () => {
     const n = faceRects.length;
     setFaces(n);
 
-    // Unique load capacity values that sum to target
     const loadVals = genUniqueSum(n, LOAD_CAP_TARGET, LOAD_MIN, LOAD_MAX);
 
     slots = [];
@@ -649,7 +648,6 @@ detectBtn.onclick = async () => {
 
     renderSlots();
     setBanner("ok", `✅ detected ${n} passenger(s) — names optional — Generate when ready`);
-    console.log("[loadCap] values:", loadVals, "sum:", loadVals.reduce((a,b)=>a+b,0));
   }catch(e){
     console.error(e);
     setBanner("err", "⚠️ detection failed — retake and try again.");
@@ -664,7 +662,7 @@ async function canvasToPngBytes(canvas){
 
 async function makeQrPngBytes(payload){
   try{
-    if (!window.QRCode || !QRCode.toDataURL) return null;
+    if (!window.QRCode || typeof QRCode.toDataURL !== "function") return null;
     const dataUrl = await QRCode.toDataURL(payload, {
       errorCorrectionLevel: "M",
       margin: 1,
@@ -681,7 +679,6 @@ async function makeQrPngBytes(payload){
   }
 }
 
-// hex -> pdf-lib rgb (0..1)
 function hexToRgb01(hex){
   const h = hex.replace("#","").trim();
   const n = parseInt(h.length === 3 ? h.split("").map(c=>c+c).join("") : h, 16);
@@ -689,6 +686,14 @@ function hexToRgb01(hex){
   const g = (n >> 8) & 255;
   const b = n & 255;
   return { r: r/255, g: g/255, b: b/255 };
+}
+
+function fitText(font, size, text, maxWidth){
+  let t = text;
+  while (t.length > 4 && font.widthOfTextAtSize(t, size) > maxWidth){
+    t = t.slice(0, -2) + "…";
+  }
+  return t;
 }
 
 async function buildBoardPassPdfBytes(){
@@ -702,7 +707,7 @@ async function buildBoardPassPdfBytes(){
   const pageH = 792;
   const page = pdf.addPage([pageW, pageH]);
 
-  // 2 cols x 3 rows = 6 passes per page (single page max)
+  // 2 cols x 3 rows = 6 passes per page
   const margin = 24;
   const gapX = 12;
   const gapY = 12;
@@ -716,6 +721,8 @@ async function buildBoardPassPdfBytes(){
   const headerFill = rgb(headerRgb.r, headerRgb.g, headerRgb.b);
   const white = rgb(1,1,1);
   const black = rgb(0.08,0.08,0.08);
+  const gray = rgb(0.35,0.35,0.35);
+  const lightLine = rgb(0.88,0.88,0.88);
 
   for (let i=0;i<MAX_PASSES;i++){
     const s = slots[i];
@@ -726,7 +733,7 @@ async function buildBoardPassPdfBytes(){
     const x = margin + col * (cellW + gapX);
     const y = pageH - margin - (row+1) * cellH - row * gapY;
 
-    // border
+    // ticket border
     page.drawRectangle({
       x, y, width: cellW, height: cellH,
       borderColor: rgb(0.15,0.15,0.15),
@@ -734,12 +741,9 @@ async function buildBoardPassPdfBytes(){
       color: rgb(1,1,1)
     });
 
-    // Header band: purple + white text
+    // header band
     const headerH = 40;
-    page.drawRectangle({
-      x, y: y + cellH - headerH, width: cellW, height: headerH,
-      color: headerFill
-    });
+    page.drawRectangle({ x, y: y + cellH - headerH, width: cellW, height: headerH, color: headerFill });
 
     page.drawText(AIRLINE_NAME.toUpperCase(), {
       x: x + 12,
@@ -758,103 +762,117 @@ async function buildBoardPassPdfBytes(){
       color: white
     });
 
-    // inner layout
+    // inner
     const pad = 12;
     const innerX = x + pad;
     const innerY = y + pad;
     const innerW = cellW - pad*2;
     const innerH = cellH - headerH - pad*2;
 
-    // face
-    const faceSize = 110;
-    const faceX = innerX;
-    const faceY = innerY + innerH - faceSize;
+    // TOP ROW: photo left, QR right, name in between (NO OVERLAPS)
+    const faceSize = 104;
+    const qrSize = 84;
+    const topRowH = Math.max(faceSize, qrSize);
 
+    const topRowTop = innerY + innerH - topRowH;
+
+    const faceX = innerX;
+    const faceY = topRowTop + Math.floor((topRowH - faceSize)/2);
+
+    const qrX = innerX + innerW - qrSize;
+    const qrY = topRowTop + Math.floor((topRowH - qrSize)/2);
+
+    // draw photo
     const faceBytes = await canvasToPngBytes(s.faceCanvas);
     const faceImg = await pdf.embedPng(faceBytes);
     page.drawRectangle({ x: faceX - 1, y: faceY - 1, width: faceSize + 2, height: faceSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1 });
     page.drawImage(faceImg, { x: faceX, y: faceY, width: faceSize, height: faceSize });
 
-    // passenger info
-    const passengerName = (s.name && s.name.trim()) ? s.name.trim() : `PASSENGER ${i+1}`;
-    const role = s.role || "Passenger";
-    const seat = s.seat || SEATS[i];
-    const boardingTime = getBoardingTimeText();
-
-    const infoX = faceX + faceSize + 12;
-    const infoTopY = faceY + faceSize;
-
-    const maxNameWidth = innerX + innerW - infoX;
-    let nameText = passengerName.toUpperCase();
-    while (fontB.widthOfTextAtSize(nameText, 16) > maxNameWidth && nameText.length > 6){
-      nameText = nameText.slice(0, -2) + "…";
-    }
-    page.drawText(nameText, { x: infoX, y: infoTopY - 18, size: 16, font: fontB, color: black });
-    page.drawText(role.toUpperCase(), { x: infoX, y: infoTopY - 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
-
-    const lineH = 14;
-    let yy = infoTopY - 56;
-    const field = (k,v) => {
-      page.drawText(k, { x: infoX, y: yy, size: 10, font, color: rgb(0.35,0.35,0.35) });
-      page.drawText(v, { x: infoX + 70, y: yy, size: 11, font: fontB, color: black });
-      yy -= lineH;
-    };
-    field("FLIGHT", FLIGHT_NUM);
-    field("GATE", GATE);
-    field("BOARD", boardingTime);
-    field("SEAT", seat);
-
-    // ✅ divider line: just below the picture
-    const dividerY = faceY - 10;
-    page.drawRectangle({
-      x: innerX,
-      y: dividerY,
-      width: innerW,
-      height: 1,
-      borderColor: rgb(0.88,0.88,0.88),
-      borderWidth: 1
-    });
-
-    // ✅ LOAD CAPACITY QR: bottom-right, payload is ONLY the number (no website)
-    const qrPayload = String(s.loadCap); // scanning shows just a number
+    // QR payload is ONLY the number
+    const qrPayload = String(s.loadCap);
     const qrBytes = await makeQrPngBytes(qrPayload);
-
     if (qrBytes){
       const qr = await pdf.embedPng(qrBytes);
-      const qrSize = 76;
 
-      const qrX = innerX + innerW - qrSize;  // right align
-      const qrY = innerY + 14;               // bottom area
-
-      // label above
       const label = "LOAD CAPACITY";
       page.drawText(label, {
         x: qrX + (qrSize/2) - (fontB.widthOfTextAtSize(label, 8)/2),
-        y: qrY + qrSize + 6,
+        y: qrY + qrSize + 4,
         size: 8,
         font: fontB,
-        color: rgb(0.35,0.35,0.35)
+        color: gray
       });
 
-      // border + QR
       page.drawRectangle({ x: qrX - 1, y: qrY - 1, width: qrSize + 2, height: qrSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1 });
       page.drawImage(qr, { x: qrX, y: qrY, width: qrSize, height: qrSize });
 
-      // "scan" under
       const scanTxt = "scan";
       page.drawText(scanTxt, {
         x: qrX + (qrSize/2) - (font.widthOfTextAtSize(scanTxt, 8)/2),
         y: qrY - 10,
         size: 8,
         font,
-        color: rgb(0.35,0.35,0.35)
+        color: gray
       });
     }
 
-    // small note (left side, bottom)
+    // Name + role area BETWEEN photo and QR
+    const passengerName = (s.name && s.name.trim()) ? s.name.trim() : `PASSENGER ${i+1}`;
+    const role = (s.role || "Passenger").toUpperCase();
+
+    const nameX = faceX + faceSize + 10;
+    const nameMaxW = Math.max(40, qrX - 8 - nameX);
+
+    const nameSize = 16;
+    const roleSize = 10;
+
+    const nameText = fitText(fontB, nameSize, passengerName.toUpperCase(), nameMaxW);
+    page.drawText(nameText, {
+      x: nameX,
+      y: topRowTop + topRowH - 20,
+      size: nameSize,
+      font: fontB,
+      color: black
+    });
+
+    const roleText = fitText(font, roleSize, role, nameMaxW);
+    page.drawText(roleText, {
+      x: nameX,
+      y: topRowTop + topRowH - 38,
+      size: roleSize,
+      font,
+      color: gray
+    });
+
+    // ✅ divider line: just below the picture row
+    const dividerY = topRowTop - 8;
+    page.drawRectangle({ x: innerX, y: dividerY, width: innerW, height: 1, borderColor: lightLine, borderWidth: 1 });
+
+    // BOTTOM AREA: fields (no overlap)
+    const fieldLeftX = innerX;
+    const fieldValX = innerX + 70;
+
+    // Start a bit below divider
+    let yy = dividerY - 18;
+
+    const field = (k,v) => {
+      page.drawText(k, { x: fieldLeftX, y: yy, size: 10, font, color: gray });
+      page.drawText(v, { x: fieldValX, y: yy, size: 11, font: fontB, color: black });
+      yy -= 14;
+    };
+
+    const boardingTime = (BOARDING_MODE === "FIXED") ? BOARDING_FIXED_TEXT : getBoardingTimeText();
+    const seat = s.seat || SEATS[i];
+
+    field("FLIGHT", FLIGHT_NUM);
+    field("GATE", GATE);
+    field("BOARD", boardingTime);
+    field("SEAT", seat);
+
+    // note bottom-left
     page.drawText("Keep this pass visible.", {
       x: innerX,
-      y: innerY + 10,
+      y: innerY + 8,
       size: 8,
       font,
       color: rgb(0.45,0.45,0.45)
