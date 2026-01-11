@@ -44,12 +44,8 @@
     display:grid; grid-template-columns: repeat(3, minmax(0, 1fr));
     gap:12px;
   }
-  @media (max-width: 950px){
-    .grid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  }
-  @media (max-width: 640px){
-    .grid{ grid-template-columns: 1fr; }
-  }
+  @media (max-width: 950px){ .grid{ grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 640px){ .grid{ grid-template-columns: 1fr; } }
   .slot{
     border:1px solid var(--border); border-radius:14px; padding:12px; background:var(--card); box-shadow: var(--shadow);
     display:grid; grid-template-columns: 110px 1fr; gap:10px; align-items:center;
@@ -82,14 +78,16 @@
   <div class="banner" id="status">⏳ waiting…</div>
 
   <h1 id="title">HiddenRift Airways — BoardPass Printer</h1>
-  <p class="sub">Snap a group photo → detect faces (max 6) → optionally enter names → generate a printable Letter PDF (6 passes per page) → upload as the “latest”.</p>
+  <p class="sub">Snap → detect faces (max 6) → enter names (optional) → generate Letter PDF (6 per page) → upload latest.</p>
 
   <div class="panel">
     <div class="kv">
       <div>Cloud Run Base</div><div class="mono" id="baseUrl">—</div>
       <div>Latest BoardPass PDF</div><div class="linkLine"><a id="latestLink" href="#" target="_blank" rel="noreferrer">—</a> <span class="tiny">(use this for the room QR)</span></div>
+      <div>Route</div><div><span class="mono" id="routeLine">—</span></div>
       <div>Flight / Gate</div><div><span class="mono" id="flightGate">—</span></div>
       <div>Boarding time</div><div><span class="mono" id="boardingCfg">—</span></div>
+      <div>Load Capacity total</div><div><span class="mono">1288</span> <span class="tiny">(QR on each pass shows a unique number; add them all)</span></div>
     </div>
   </div>
 
@@ -116,15 +114,9 @@
       <div>
         <label style="display:flex; gap:8px; align-items:center; margin:0;">
           <input type="checkbox" id="useQr" checked />
-          <span>Include QR (encodes passenger + seat + flight + optional puzzle code)</span>
+          <span>Include QR (shows each passenger’s Load Capacity number)</span>
         </label>
-        <div class="tiny">Tip: keep the room QR pointing at the “Latest BoardPass PDF” link above.</div>
-      </div>
-
-      <div>Puzzle code (optional)</div>
-      <div>
-        <input type="text" id="puzzleCode" placeholder="e.g., CABIN-LOCK-4826 (optional)"/>
-        <div class="tiny">If set, it’s included inside each pass QR payload.</div>
+        <div class="tiny">Each QR encodes ONLY a number. Add all scanned numbers → total must equal <b>1288</b>.</div>
       </div>
     </div>
   </div>
@@ -138,7 +130,7 @@
   </div>
 
   <div class="tiny">
-    Operator flow: Start Camera → Snap → Detect → (optional names) → Generate → auto-download + upload as latest.
+    Workflow: Start Camera → Snap → Detect → (names optional) → Generate → auto-download + upload latest.
   </div>
 </main>
 
@@ -153,43 +145,51 @@ const CLOUD_RUN_BASE = "https://alien-face-service-791433334355.us-east4.run.app
 const DETECT_ENDPOINT = CLOUD_RUN_BASE + "/detectFaces";
 const UPLOAD_ENDPOINT = CLOUD_RUN_BASE + "/uploadPdfDirect";
 
+// BoardPass naming
 const LATEST_BOARDPASS_URL = CLOUD_RUN_BASE + "/boardpass_current";
 const TARGET_OBJECT_NAME = "boardpass_current.pdf";
 
 const MAX_PASSES = 6;
 const SEATS = ["1A","1B","2A","2B","3A","3B"];
 
-// Branding / content (front-of-house)
+// Branding / content
 const AIRLINE_NAME = "HiddenRift Airways";
 const AIRLINE_CODE = "HR";
-const FLIGHT_NUM   = "HR-876";
-const GATE         = "RIFT-3";
-const FROM_CITY    = "BLOOMSBURG";
-const TO_CITY      = "THE RIFT";
-const FROM_CODE    = "BLO";
-const TO_CODE      = "RFT";
+const FLIGHT_NUM = "HR-876";
+const GATE = "RIFT-3";
 
-// Boarding time: now minus 10 minutes
-const BOARDING_MODE = "NOW_PLUS_MIN"; // "NOW_PLUS_MIN" or "FIXED"
-const BOARDING_OFFSET_MIN = -10;
-const BOARDING_FIXED_TEXT = "6:10 PM";
+// NEW: route details
+const ORIGIN = "BLOOMSBURG (BLM)";
+const DESTINATION = "WILKES-BARRE (AVP)";
 
-// Header strip: purplish + white BOARDING PASS
-const HEADER_HEX = "#6B2BD1"; // purple band
+// Depart time behavior (separate from boarding)
+const DEPART_MODE = "NOW_PLUS_MIN";     // "NOW_PLUS_MIN" or "FIXED"
+const DEPART_OFFSET_MIN = 25;           // departs in 25 minutes
+const DEPART_FIXED_TEXT = "7:05 PM";    // used when FIXED
+const DATE_MODE = "TODAY";              // "TODAY" or "FIXED"
+const DATE_FIXED_TEXT = "JAN 11";       // used when FIXED
+
+// Boarding time behavior: NOW - 10 minutes
+const BOARDING_MODE = "NOW_PLUS_MIN";   // "NOW_PLUS_MIN" or "FIXED"
+const BOARDING_OFFSET_MIN = -10;        // now minus 10 mins
+const BOARDING_FIXED_TEXT = "6:10 PM";  // used when FIXED
+
+// Header strip color (purplish) and white text
+const HEADER_HEX = "#6B2BD1";
+
+// Load capacity puzzle: QR numbers sum to this total (unique, non-repeating within the group)
+const LOAD_CAPACITY_TOTAL = 1288;
 
 // Face crop tuning
 const FACE_W_MULT = 2.0;
 const FACE_H_MULT = 2.2;
 const FACE_Y_SHIFT = 0.65;
 
-// Puzzle hook: distribute a 6-digit key across the 6 seats (one digit per pass)
-// Players read digits in seat order: 1A,1B,2A,2B,3A,3B
-const SEAT_DIGIT_ENABLED = true;
-
 /*** DOM refs ***/
 const statusEl = document.getElementById("status");
 const baseUrlEl = document.getElementById("baseUrl");
 const latestLink = document.getElementById("latestLink");
+const routeLineEl = document.getElementById("routeLine");
 const flightGateEl = document.getElementById("flightGate");
 const boardingCfgEl = document.getElementById("boardingCfg");
 
@@ -207,19 +207,18 @@ const facesEl = document.getElementById("faces");
 const slotsEl = document.getElementById("slots");
 
 const useQrEl = document.getElementById("useQr");
-const puzzleCodeEl = document.getElementById("puzzleCode");
 
 /*** State ***/
 let snapshotImg = null;
 let snapshotDataUrl = null;
 let faceRects = [];
-let slots = [];
-let runSeed = null; // set at detection time so puzzles stay stable for that run
+let slots = []; // each slot: { seat, name, role, faceCanvas, loadCap }
 
 /*** Init UI ***/
 baseUrlEl.textContent = CLOUD_RUN_BASE;
 latestLink.href = LATEST_BOARDPASS_URL;
 latestLink.textContent = LATEST_BOARDPASS_URL;
+routeLineEl.textContent = `${ORIGIN} → ${DESTINATION}`;
 flightGateEl.textContent = `${FLIGHT_NUM}  |  Gate ${GATE}`;
 boardingCfgEl.textContent = (BOARDING_MODE === "NOW_PLUS_MIN")
   ? `Auto: now ${BOARDING_OFFSET_MIN >= 0 ? "+" : "−"} ${Math.abs(BOARDING_OFFSET_MIN)} min`
@@ -245,14 +244,28 @@ function stopCamera(){
 function fmtTime(d){
   return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
-function fmtDate(d){
-  return d.toLocaleDateString("en-US", { year:"numeric", month:"short", day:"2-digit" });
+
+function fmtDateShort(d){
+  const m = d.toLocaleString("en-US", { month:"short" }).toUpperCase();
+  const day = String(d.getDate()).padStart(2,"0");
+  return `${m} ${day}`;
 }
 
 function getBoardingTimeText(){
   if (BOARDING_MODE === "FIXED") return BOARDING_FIXED_TEXT;
   const d = new Date(Date.now() + BOARDING_OFFSET_MIN * 60 * 1000);
   return fmtTime(d);
+}
+
+function getDepartTimeText(){
+  if (DEPART_MODE === "FIXED") return DEPART_FIXED_TEXT;
+  const d = new Date(Date.now() + DEPART_OFFSET_MIN * 60 * 1000);
+  return fmtTime(d);
+}
+
+function getDateText(){
+  if (DATE_MODE === "FIXED") return DATE_FIXED_TEXT;
+  return fmtDateShort(new Date());
 }
 
 function blobToBase64(blob){
@@ -274,18 +287,6 @@ async function imageToBase64NoPrefix(imgEl){
 }
 
 function clamp(n, min, max){ return Math.max(min, Math.min(max, n)); }
-
-/*** IMPORTANT: pdf-lib standard fonts are WinAnsi only.
- * This sanitizes any text before page.drawText() so you never hit encoding errors.
- */
-function safePdfText(s){
-  return String(s ?? "")
-    .replace(/\u2192/g, "->")      // "→"
-    .replace(/[\u2014\u2013]/g, "-")// em/en dash
-    .replace(/\u2212/g, "-")       // minus sign
-    .replace(/\u2026/g, "...")     // ellipsis
-    .replace(/[^\x20-\x7E]/g, ""); // strip anything else non-ASCII
-}
 
 function cropFaceToCanvas(imgEl, rect, outW=520, outH=520){
   const imgW = imgEl.naturalWidth || imgEl.width;
@@ -361,7 +362,9 @@ function renderEmptySlots(){
         </div>
         <div>
           <label>Role (optional)</label>
-          <select disabled><option>Passenger</option></select>
+          <select disabled>
+            <option>Passenger</option>
+          </select>
         </div>
       </div>
     `;
@@ -399,7 +402,10 @@ function renderSlots(){
         </div>
         <div>
           <label>Passenger name</label>
-          <input type="text" data-idx="${i}" class="nameIn" placeholder="${s ? ("PASSENGER " + (i+1)) : "Detect faces first"}" ${s ? "" : "disabled"} value="${s && s.name ? escapeHtml(s.name) : ""}"/>
+          <input type="text" data-idx="${i}" class="nameIn"
+            placeholder="${s ? ("PASSENGER " + (i+1)) : "Detect faces first"}"
+            ${s ? "" : "disabled"}
+            value="${s && s.name ? escapeHtml(s.name) : ""}"/>
         </div>
         <div>
           <label>Role (optional)</label>
@@ -414,7 +420,9 @@ function renderSlots(){
     `;
     slotsEl.appendChild(div);
 
-    if (s && s.role) div.querySelector(".roleSel").value = s.role;
+    if (s && s.role){
+      div.querySelector(".roleSel").value = s.role;
+    }
   }
 
   document.querySelectorAll(".nameIn").forEach(inp=>{
@@ -433,6 +441,77 @@ function renderSlots(){
   });
 
   makeBtn.disabled = !slots.some(s => !!s);
+}
+
+/*** Secure-ish random int (client-side) ***/
+function randInt(min, max){
+  min = Math.ceil(min); max = Math.floor(max);
+  if (max < min) [min, max] = [max, min];
+  const range = max - min + 1;
+  const u32 = new Uint32Array(1);
+  crypto.getRandomValues(u32);
+  return min + (u32[0] % range);
+}
+
+/*** Generate unique Load Capacity values that sum to TOTAL ***/
+function generateUniqueCapacities(n, total){
+  if (n <= 0) return [];
+  if (n === 1) return [total];
+
+  // choose a reasonable range so numbers "feel" random but printable
+  const minVal = 50;
+  const maxVal = 900;
+
+  for (let attempt=0; attempt<1200; attempt++){
+    const vals = [];
+    const used = new Set();
+    let remaining = total;
+
+    for (let i=0; i<n-1; i++){
+      const remainingSlots = (n - i - 1);
+
+      // keep room for remaining slots to be at least minVal each
+      const maxAllowed = remaining - (minVal * remainingSlots);
+      const hi = Math.min(maxVal, maxAllowed);
+      const lo = minVal;
+
+      if (hi < lo) break;
+
+      let v = null;
+      for (let k=0; k<50; k++){
+        const candidate = randInt(lo, hi);
+        if (!used.has(candidate)){
+          v = candidate;
+          break;
+        }
+      }
+      if (v === null) break;
+
+      vals.push(v);
+      used.add(v);
+      remaining -= v;
+    }
+
+    if (vals.length !== n-1) continue;
+
+    const last = total - vals.reduce((a,b)=>a+b, 0);
+    if (last >= minVal && last <= maxVal && !used.has(last)){
+      vals.push(last);
+      return vals;
+    }
+  }
+
+  // fallback (guaranteed unique, sums correctly): evenly spread + distinct tweaks
+  const base = Math.floor(total / n);
+  const vals = [];
+  for (let i=0;i<n;i++) vals.push(base + i); // unique
+  const sum = vals.reduce((a,b)=>a+b, 0);
+  vals[0] += (total - sum); // adjust to correct total
+  // ensure still unique
+  if (new Set(vals).size !== vals.length){
+    vals[0] -= 1; vals[1] += 1;
+  }
+  return vals;
 }
 
 /*** Camera / file ***/
@@ -526,12 +605,9 @@ retakeBtn.onclick = () => {
   snapshotDataUrl = null;
   faceRects = [];
   slots = [];
-  runSeed = null;
-
   dimsEl.textContent = "—";
   facesEl.textContent = "—";
   renderEmptySlots();
-
   makeBtn.disabled = true;
   detectBtn.disabled = true;
   retakeBtn.disabled = true;
@@ -578,17 +654,14 @@ detectBtn.onclick = async () => {
     if (!faceRects.length){
       setFaces(0);
       slots = [];
-      runSeed = null;
       renderEmptySlots();
       makeBtn.disabled = true;
-      setBanner("err", "⚠️ 0 faces detected — please retake (no fallback in airplane room).");
+      setBanner("err", "⚠️ 0 faces detected — please retake with faces larger, brighter, and centered.");
       return;
     }
 
     faceRects = faceRects.slice(0, MAX_PASSES);
     setFaces(faceRects.length);
-
-    runSeed = `${Date.now().toString(36)}:${faceRects.length}:${snapshotImg.naturalWidth}x${snapshotImg.naturalHeight}`;
 
     slots = [];
     for (let i=0;i<MAX_PASSES;i++){
@@ -598,7 +671,8 @@ detectBtn.onclick = async () => {
         seat: SEATS[i],
         name: "",
         role: "Passenger",
-        faceCanvas
+        faceCanvas,
+        loadCap: null
       });
     }
 
@@ -610,16 +684,17 @@ detectBtn.onclick = async () => {
   }
 };
 
-/*** QR + puzzle seed helpers ***/
+/*** PDF generation ***/
 async function canvasToPngBytes(canvas){
   const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
   return await blob.arrayBuffer();
 }
 
-async function makeQrPngBytes(payload){
+async function makeQrPngBytes(payloadText){
   try{
     if (!window.QRCode || !QRCode.toDataURL) return null;
-    const dataUrl = await QRCode.toDataURL(payload, {
+    // IMPORTANT: payload is JUST the number as text
+    const dataUrl = await QRCode.toDataURL(String(payloadText), {
       errorCorrectionLevel: "M",
       margin: 1,
       width: 256
@@ -635,64 +710,7 @@ async function makeQrPngBytes(payload){
   }
 }
 
-// FNV-1a 32-bit
-function fnv1a(str){
-  let h = 0x811c9dc5;
-  for (let i=0;i<str.length;i++){
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-
-// xorshift-based digits
-function deriveDigits(seed32, count){
-  let x = seed32 >>> 0;
-  const out = [];
-  for (let i=0;i<count;i++){
-    x ^= (x << 13); x >>>= 0;
-    x ^= (x >>> 17); x >>>= 0;
-    x ^= (x << 5);  x >>>= 0;
-    out.push(x % 10);
-  }
-  return out;
-}
-
-function getSeatDigits(){
-  const puzzle = (puzzleCodeEl.value || "").trim();
-  const seedStr = `${runSeed || "no-seed"}|${FLIGHT_NUM}|${GATE}|${puzzle}`;
-  const seed32 = fnv1a(seedStr);
-  return deriveDigits(seed32, 6); // one digit per seat in SEATS order
-}
-
-function getZoneForSeat(seat){
-  const row = parseInt(seat[0], 10);
-  return row === 1 ? "A" : row === 2 ? "B" : "C";
-}
-
-function buildQrPayload(passengerName, seat, role, seatDigit){
-  const puzzle = (puzzleCodeEl.value || "").trim();
-  const boardingTime = getBoardingTimeText();
-  const date = fmtDate(new Date());
-  const parts = [
-    "BP",
-    safePdfText(FLIGHT_NUM),
-    `GATE=${safePdfText(GATE)}`,
-    `DATE=${safePdfText(date)}`,
-    `FROM=${safePdfText(FROM_CODE)}`,
-    `TO=${safePdfText(TO_CODE)}`,
-    `SEAT=${safePdfText(seat)}`,
-    `ZONE=${safePdfText(getZoneForSeat(seat))}`,
-    `NAME=${safePdfText(passengerName)}`,
-    `ROLE=${safePdfText(role)}`,
-    `BOARD=${safePdfText(boardingTime)}`
-  ];
-  if (SEAT_DIGIT_ENABLED && typeof seatDigit === "number") parts.push(`SEC=${seatDigit}`);
-  if (puzzle) parts.push(`PUZZLE=${safePdfText(puzzle)}`);
-  return parts.join("|");
-}
-
-/*** PDF helpers ***/
+// hex -> pdf-lib rgb (0..1)
 function hexToRgb01(hex){
   const h = hex.replace("#","").trim();
   const n = parseInt(h.length === 3 ? h.split("").map(c=>c+c).join("") : h, 16);
@@ -702,46 +720,17 @@ function hexToRgb01(hex){
   return { r: r/255, g: g/255, b: b/255 };
 }
 
-function drawDashedLine(page, x1, y1, x2, y2, dashLen, gapLen, drawFn){
-  const horizontal = (y1 === y2);
-  if (!horizontal && x1 !== x2) return;
-
-  if (horizontal){
-    const dir = x2 >= x1 ? 1 : -1;
-    let x = x1;
-    const end = x2;
-    while ((dir === 1 && x < end) || (dir === -1 && x > end)){
-      const xNext = x + dir * dashLen;
-      const segEnd = (dir === 1) ? Math.min(xNext, end) : Math.max(xNext, end);
-      drawFn(x, y1, segEnd, y1);
-      x = segEnd + dir * gapLen;
-    }
-  } else {
-    const dir = y2 >= y1 ? 1 : -1;
-    let y = y1;
-    const end = y2;
-    while ((dir === 1 && y < end) || (dir === -1 && y > end)){
-      const yNext = y + dir * dashLen;
-      const segEnd = (dir === 1) ? Math.min(yNext, end) : Math.max(yNext, end);
-      drawFn(x1, y, x1, segEnd);
-      y = segEnd + dir * gapLen;
-    }
+function assignLoadCaps(){
+  const active = [];
+  for (let i=0;i<MAX_PASSES;i++){
+    if (slots[i]) active.push(i);
   }
-}
+  const n = active.length;
+  const vals = generateUniqueCapacities(n, LOAD_CAPACITY_TOTAL);
 
-function drawFakeBarcode(page, x, y, w, h, seed32, rgbFn){
-  let xCursor = x;
-  let n = seed32 >>> 0;
-  while (xCursor < x + w){
-    n ^= (n << 13); n >>>= 0;
-    n ^= (n >>> 17); n >>>= 0;
-    n ^= (n << 5);  n >>>= 0;
-
-    const barW = 1 + (n % 3);
-    const gapW = 1 + ((n >>> 3) % 3);
-
-    page.drawRectangle({ x: xCursor, y, width: barW, height: h, color: rgbFn(0.08,0.08,0.08) });
-    xCursor += barW + gapW;
+  for (let k=0;k<n;k++){
+    const idx = active[k];
+    slots[idx].loadCap = vals[k];
   }
 }
 
@@ -749,51 +738,33 @@ async function buildBoardPassPdfBytes(){
   const { PDFDocument, StandardFonts, rgb } = PDFLib;
   const pdf = await PDFDocument.create();
 
-  const font  = await pdf.embedFont(StandardFonts.Helvetica);
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
   const fontB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-  const pageW = 612;
+  const pageW = 612;  // US Letter
   const pageH = 792;
   const page = pdf.addPage([pageW, pageH]);
 
-  const margin = 20;
-  const gapX = 10;
-  const gapY = 10;
+  // 2 cols x 3 rows = 6 passes per page (single page max)
+  const margin = 24;
+  const gapX = 12;
+  const gapY = 12;
 
   const cellW = (pageW - margin*2 - gapX) / 2;
   const cellH = (pageH - margin*2 - gapY*2) / 3;
 
   page.drawRectangle({ x:0, y:0, width:pageW, height:pageH, color: rgb(1,1,1) });
 
-  // perforation cut lines
-  const cutColor = rgb(0.75,0.75,0.75);
-  const drawSeg = (x1,y1,x2,y2) => {
-    const w = Math.max(0.8, Math.abs(x2-x1) || 0.8);
-    const h = Math.max(0.8, Math.abs(y2-y1) || 0.8);
-    page.drawRectangle({ x: Math.min(x1,x2), y: Math.min(y1,y2), width: w, height: h, color: cutColor });
-  };
-
-  const xMid = margin + cellW + gapX/2;
-  drawDashedLine(page, xMid, margin, xMid, pageH - margin, 6, 6, drawSeg);
-
-  const yCut1 = margin + cellH + gapY/2;
-  const yCut2 = margin + (cellH + gapY) * 2 - gapY/2;
-  drawDashedLine(page, margin, yCut1, pageW - margin, yCut1, 6, 6, drawSeg);
-  drawDashedLine(page, margin, yCut2, pageW - margin, yCut2, 6, 6, drawSeg);
-
   const includeQr = !!useQrEl.checked;
 
   const headerRgb = hexToRgb01(HEADER_HEX);
   const headerFill = rgb(headerRgb.r, headerRgb.g, headerRgb.b);
-
   const white = rgb(1,1,1);
   const black = rgb(0.08,0.08,0.08);
-  const gray  = rgb(0.35,0.35,0.35);
-  const lightGray = rgb(0.88,0.88,0.88);
-  const watermark = rgb(0.93,0.93,0.96);
 
-  const seatDigits = (SEAT_DIGIT_ENABLED && runSeed) ? getSeatDigits() : [null,null,null,null,null,null];
-  const dateText = safePdfText(fmtDate(new Date()));
+  const dateText = getDateText();
+  const departTime = getDepartTimeText();
+  const boardingTime = getBoardingTimeText();
 
   for (let i=0;i<MAX_PASSES;i++){
     const s = slots[i];
@@ -804,6 +775,7 @@ async function buildBoardPassPdfBytes(){
     const x = margin + col * (cellW + gapX);
     const y = pageH - margin - (row+1) * cellH - row * gapY;
 
+    // border
     page.drawRectangle({
       x, y, width: cellW, height: cellH,
       borderColor: rgb(0.15,0.15,0.15),
@@ -811,31 +783,31 @@ async function buildBoardPassPdfBytes(){
       color: rgb(1,1,1)
     });
 
-    // watermark pattern
-    const wmStepX = 48;
-    const wmStepY = 28;
-    for (let yy = y + 10; yy < y + cellH - 52; yy += wmStepY){
-      for (let xx = x + 10; xx < x + cellW - 10; xx += wmStepX){
-        page.drawText("HR", { x: xx, y: yy, size: 10, font: fontB, color: watermark, rotate: PDFLib.degrees(12) });
-      }
-    }
-
-    // header band
+    // Header band: purple + white text + "BOARDING PASS"
     const headerH = 40;
-    page.drawRectangle({ x, y: y + cellH - headerH, width: cellW, height: headerH, color: headerFill });
-    page.drawCircle({ x: x + 16, y: y + cellH - 20, size: 7, color: white });
+    page.drawRectangle({
+      x, y: y + cellH - headerH, width: cellW, height: headerH,
+      color: headerFill
+    });
 
-    page.drawText(safePdfText(AIRLINE_NAME.toUpperCase()), {
-      x: x + 28, y: y + cellH - 26, size: 12, font: fontB, color: white
+    page.drawText(AIRLINE_NAME.toUpperCase(), {
+      x: x + 12,
+      y: y + cellH - 26,
+      size: 12,
+      font: fontB,
+      color: white
     });
 
     const bpText = "BOARDING PASS";
     page.drawText(bpText, {
       x: x + cellW - 12 - fontB.widthOfTextAtSize(bpText, 12),
       y: y + cellH - 26,
-      size: 12, font: fontB, color: white
+      size: 12,
+      font: fontB,
+      color: white
     });
 
+    // inner layout
     const pad = 12;
     const innerX = x + pad;
     const innerY = y + pad;
@@ -843,105 +815,100 @@ async function buildBoardPassPdfBytes(){
     const innerH = cellH - headerH - pad*2;
 
     // face
-    const faceSize = 102;
+    const faceSize = 110;
     const faceX = innerX;
     const faceY = innerY + innerH - faceSize;
 
     const faceBytes = await canvasToPngBytes(s.faceCanvas);
     const faceImg = await pdf.embedPng(faceBytes);
-    page.drawRectangle({ x: faceX - 1, y: faceY - 1, width: faceSize + 2, height: faceSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1, color: rgb(1,1,1) });
+    page.drawRectangle({ x: faceX - 1, y: faceY - 1, width: faceSize + 2, height: faceSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1 });
     page.drawImage(faceImg, { x: faceX, y: faceY, width: faceSize, height: faceSize });
 
-    // passenger + fields
-    const passengerNameRaw = (s.name && s.name.trim()) ? s.name.trim() : `PASSENGER ${i+1}`;
-    const passengerName = safePdfText(passengerNameRaw);
-    const role = safePdfText(s.role || "Passenger");
-    const seat = safePdfText(s.seat || SEATS[i]);
-    const zone = safePdfText(getZoneForSeat(seat));
-    const boardingTime = safePdfText(getBoardingTimeText());
-    const seatDigit = seatDigits[i];
-
-    // PNR
-    const pnrSeed = fnv1a(`${runSeed || "no-seed"}|${seat}|${passengerName}|${role}`);
-    const PNR_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let pnr = "";
-    let p = pnrSeed;
-    for (let k=0;k<6;k++){
-      p ^= (p << 13); p >>>= 0;
-      p ^= (p >>> 17); p >>>= 0;
-      p ^= (p << 5);  p >>>= 0;
-      pnr += PNR_CHARS[p % PNR_CHARS.length];
-    }
+    // text fields
+    const passengerName = (s.name && s.name.trim()) ? s.name.trim() : `PASSENGER ${i+1}`;
+    const role = s.role || "Passenger";
+    const seat = s.seat || SEATS[i];
 
     const infoX = faceX + faceSize + 12;
     const infoTopY = faceY + faceSize;
 
     const maxNameWidth = innerX + innerW - infoX;
-    let nameText = safePdfText(passengerName.toUpperCase());
-    while (fontB.widthOfTextAtSize(nameText, 14) > maxNameWidth && nameText.length > 6){
-      nameText = nameText.slice(0, -2) + "...";
-      nameText = safePdfText(nameText);
+    let nameText = passengerName.toUpperCase();
+    while (fontB.widthOfTextAtSize(nameText, 16) > maxNameWidth && nameText.length > 6){
+      nameText = nameText.slice(0, -2) + "…";
     }
+    page.drawText(nameText, { x: infoX, y: infoTopY - 18, size: 16, font: fontB, color: black });
+    page.drawText(role.toUpperCase(), { x: infoX, y: infoTopY - 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
 
-    page.drawText(nameText, { x: infoX, y: infoTopY - 16, size: 14, font: fontB, color: black });
-    page.drawText(safePdfText(role.toUpperCase()), { x: infoX, y: infoTopY - 30, size: 9, font, color: gray });
-
-    // route row (NO unicode arrow anymore)
-    page.drawText(safePdfText(`${FROM_CODE}  ->  ${TO_CODE}`), { x: infoX, y: infoTopY - 46, size: 10, font: fontB, color: black });
-    page.drawText(safePdfText(`${FROM_CITY} to ${TO_CITY}`), { x: infoX, y: infoTopY - 58, size: 8.5, font, color: gray });
-
-    const field = (k, v, xx, yy) => {
-      page.drawText(safePdfText(k), { x: xx, y: yy, size: 8.5, font, color: gray });
-      page.drawText(safePdfText(v), { x: xx, y: yy - 11, size: 10.5, font: fontB, color: black });
+    const lineH = 14;
+    let yy = infoTopY - 56;
+    const field = (k,v) => {
+      page.drawText(k, { x: infoX, y: yy, size: 10, font, color: rgb(0.35,0.35,0.35) });
+      page.drawText(v, { x: infoX + 70, y: yy, size: 11, font: fontB, color: black });
+      yy -= lineH;
     };
 
-    const col1X = innerX;
-    const col2X = innerX + innerW/2 + 6;
+    field("FROM", ORIGIN);
+    field("TO", DESTINATION);
+    field("DATE", dateText);
+    field("DEPART", departTime);
 
-    field("FLIGHT", FLIGHT_NUM, col1X, innerY + 62);
-    field("GATE", GATE, col2X, innerY + 62);
+    // small divider
+    page.drawRectangle({ x: infoX, y: yy + 6, width: innerX + innerW - infoX, height: 1, borderColor: rgb(0.88,0.88,0.88), borderWidth: 1 });
+    yy -= 6;
 
-    field("BOARD", boardingTime, col1X, innerY + 36);
-    field("DATE", dateText, col2X, innerY + 36);
+    field("FLIGHT", FLIGHT_NUM);
+    field("GATE", GATE);
+    field("BOARD", boardingTime);
+    field("SEAT", seat);
 
-    // big seat + zone badge
-    const seatBadgeW = 82;
-    const seatBadgeH = 34;
-    const seatBadgeX = innerX + innerW - seatBadgeW;
-    const seatBadgeY = innerY + innerH - seatBadgeH;
-    page.drawRectangle({ x: seatBadgeX, y: seatBadgeY, width: seatBadgeW, height: seatBadgeH, borderColor: lightGray, borderWidth: 1, color: rgb(1,1,1) });
-    page.drawText(seat, { x: seatBadgeX + 10, y: seatBadgeY + 10, size: 16, font: fontB, color: black });
-    page.drawText(safePdfText(`ZONE ${zone}`), { x: seatBadgeX + 10, y: seatBadgeY + 2, size: 8, font, color: gray });
+    // lower divider
+    page.drawRectangle({ x: innerX, y: innerY + 70, width: innerW, height: 1, borderColor: rgb(0.85,0.85,0.85), borderWidth: 1 });
 
-    // barcode strip + PNR + optional seat digit
-    const barY = innerY + 4;
-    const barH = 16;
-    const barX = innerX;
-    const barW = innerW - 92;
+    // code line (kept, but not the puzzle)
+    const codeLabelY = innerY + 52;
+    const shortCode = `${AIRLINE_CODE}-${seat}-${String(i+1).padStart(2,"0")}`;
+    page.drawText("CODE", { x: innerX, y: codeLabelY, size: 9, font, color: rgb(0.35,0.35,0.35) });
+    page.drawText(shortCode, { x: innerX + 42, y: codeLabelY, size: 12, font: fontB, color: black });
 
-    drawFakeBarcode(page, barX, barY, barW, barH, pnrSeed, rgb);
-
-    page.drawText("PNR", { x: barX + barW + 8, y: barY + 10, size: 7.5, font, color: gray });
-    page.drawText(pnr, { x: barX + barW + 8, y: barY + 1, size: 10, font: fontB, color: black });
-
-    if (SEAT_DIGIT_ENABLED && typeof seatDigit === "number"){
-      page.drawText("SEC", { x: innerX + innerW - 34, y: innerY + 22, size: 7.5, font, color: gray });
-      page.drawText(String(seatDigit), { x: innerX + innerW - 20, y: innerY + 12, size: 14, font: fontB, color: black });
-    }
-
-    // QR
+    // QR: Load Capacity (payload is ONLY the number)
     if (includeQr){
-      const qrPayload = buildQrPayload(passengerName, seat, role, seatDigit);
-      const qrBytes = await makeQrPngBytes(qrPayload);
+      const capVal = (typeof s.loadCap === "number") ? s.loadCap : 0;
+      const qrBytes = await makeQrPngBytes(String(capVal));
       if (qrBytes){
         const qr = await pdf.embedPng(qrBytes);
-        const qrSize = 56;
+        const qrSize = 76;
         const qrX = innerX + innerW - qrSize;
-        const qrY = innerY + 4 + barH + 2;
-        page.drawRectangle({ x: qrX - 1, y: qrY - 1, width: qrSize + 2, height: qrSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1, color: rgb(1,1,1) });
+        const qrY = innerY + 8;
+
+        // label above QR
+        const label = "LOAD CAPACITY";
+        page.drawText(label, {
+          x: qrX + (qrSize/2) - (fontB.widthOfTextAtSize(label, 7)/2),
+          y: qrY + qrSize + 14,
+          size: 7,
+          font: fontB,
+          color: rgb(0.35,0.35,0.35)
+        });
+
+        page.drawRectangle({ x: qrX - 1, y: qrY - 1, width: qrSize + 2, height: qrSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1 });
         page.drawImage(qr, { x: qrX, y: qrY, width: qrSize, height: qrSize });
+
+        // small "scan" under QR
+        const scanTxt = "scan";
+        page.drawText(scanTxt, {
+          x: qrX + (qrSize/2) - (font.widthOfTextAtSize(scanTxt, 7)/2),
+          y: qrY - 10,
+          size: 7,
+          font,
+          color: rgb(0.45,0.45,0.45)
+        });
       }
     }
+
+    page.drawText("Valid for immediate boarding — keep this pass visible.", {
+      x: innerX, y: innerY + 10, size: 8, font, color: rgb(0.45,0.45,0.45)
+    });
   }
 
   return await pdf.save();
@@ -964,7 +931,9 @@ async function uploadPdfDirectToCloudRun(pdfBlob){
   const txt = await res.text();
   console.log("[upload] response", res.status, txt);
 
-  if (!res.ok) throw new Error("upload failed: " + res.status + " " + txt);
+  if (!res.ok){
+    throw new Error("upload failed: " + res.status + " " + txt);
+  }
   setBanner("ok", "✅ Uploaded. Latest BoardPass PDF is live at the room QR link.");
 }
 
@@ -975,10 +944,9 @@ makeBtn.onclick = async () => {
       setBanner("warn", "No passengers detected yet. Click Detect Passengers first.");
       return;
     }
-    if (!runSeed){
-      setBanner("warn", "Run seed not set (click Detect Passengers again).");
-      return;
-    }
+
+    // generate NEW load capacity values each time you generate
+    assignLoadCaps();
 
     setBanner("", "🧾 building PDF…");
     const pdfBytes = await buildBoardPassPdfBytes();
