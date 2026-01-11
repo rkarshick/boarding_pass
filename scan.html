@@ -1,0 +1,38 @@
+<!-- FILE: scan.html  (Put this in the SAME GitHub Pages repo root) -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Load Capacity</title>
+<style>
+  html,body{ margin:0; padding:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#0b0b10; color:#fff; }
+  .wrap{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .card{
+    width:min(520px, 92vw);
+    background:rgba(255,255,255,.06);
+    border:1px solid rgba(255,255,255,.14);
+    border-radius:18px;
+    padding:22px 18px;
+    text-align:center;
+  }
+  .label{ font-size:14px; letter-spacing:.16em; opacity:.8; margin-bottom:8px; }
+  .num{ font-size:72px; font-weight:900; letter-spacing:.06em; margin:6px 0 10px; }
+  .tiny{ font-size:13px; opacity:.75; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="label">LOAD CAPACITY</div>
+    <div class="num" id="n">—</div>
+    <div class="tiny">Return to the cabin and add all passenger values.</div>
+  </div>
+</div>
+
+<script>
+  const n = new URLSearchParams(location.search).get("n");
+  document.getElementById("n").textContent = (n && /^\d+$/.test(n)) ? n : "—";
+</script>
+</body>
+</html>
