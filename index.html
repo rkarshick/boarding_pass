@@ -78,16 +78,16 @@
   <div class="banner" id="status">⏳ waiting…</div>
 
   <h1 id="title">HiddenRift Airways — BoardPass Printer</h1>
-  <p class="sub">Snap → detect faces (max 6) → enter names (optional) → generate Letter PDF (6 per page) → upload latest.</p>
+  <p class="sub">Snap → detect faces (max 6) → optionally enter names → generate Letter PDF (6 passes per page) → upload as the latest.</p>
 
   <div class="panel">
     <div class="kv">
       <div>Cloud Run Base</div><div class="mono" id="baseUrl">—</div>
-      <div>Latest BoardPass PDF</div><div class="linkLine"><a id="latestLink" href="#" target="_blank" rel="noreferrer">—</a> <span class="tiny">(use this for the room QR)</span></div>
-      <div>Route</div><div><span class="mono" id="routeLine">—</span></div>
+      <div>Latest BoardPass PDF</div><div class="linkLine"><a id="latestLink" href="#" target="_blank" rel="noreferrer">—</a></div>
       <div>Flight / Gate</div><div><span class="mono" id="flightGate">—</span></div>
       <div>Boarding time</div><div><span class="mono" id="boardingCfg">—</span></div>
-      <div>Load Capacity total</div><div><span class="mono">1288</span> <span class="tiny">(QR on each pass shows a unique number; add them all)</span></div>
+      <div>Load Capacity Target</div><div><span class="mono" id="loadTargetUi">—</span> <span class="tiny">(players scan each pass QR; add numbers)</span></div>
+      <div>Scan URL</div><div class="mono" id="scanUrlUi">—</div>
     </div>
   </div>
 
@@ -109,15 +109,7 @@
       <div>Image (w×h)</div><div><span id="dims" class="mono">—</span></div>
       <div>Faces found</div><div><span id="faces" class="mono">—</span></div>
       <div>Seat map</div><div><span class="mono">1A, 1B, 2A, 2B, 3A, 3B</span></div>
-
-      <div>QR on passes</div>
-      <div>
-        <label style="display:flex; gap:8px; align-items:center; margin:0;">
-          <input type="checkbox" id="useQr" checked />
-          <span>Include QR (shows each passenger’s Load Capacity number)</span>
-        </label>
-        <div class="tiny">Each QR encodes ONLY a number. Add all scanned numbers → total must equal <b>1288</b>.</div>
-      </div>
+      <div>QR</div><div><span>Always included (labeled <b>LOAD CAPACITY</b>, “scan” under)</span></div>
     </div>
   </div>
 
@@ -129,9 +121,7 @@
     <button id="make" disabled>Generate BoardPass PDF</button>
   </div>
 
-  <div class="tiny">
-    Workflow: Start Camera → Snap → Detect → (names optional) → Generate → auto-download + upload latest.
-  </div>
+  <div class="tiny">Note: add <span class="mono">scan.html</span> to this repo too (provided below) so QR scans always show a big number.</div>
 </main>
 
 <!-- pdf-lib for PDF export -->
@@ -145,7 +135,6 @@ const CLOUD_RUN_BASE = "https://alien-face-service-791433334355.us-east4.run.app
 const DETECT_ENDPOINT = CLOUD_RUN_BASE + "/detectFaces";
 const UPLOAD_ENDPOINT = CLOUD_RUN_BASE + "/uploadPdfDirect";
 
-// BoardPass naming
 const LATEST_BOARDPASS_URL = CLOUD_RUN_BASE + "/boardpass_current";
 const TARGET_OBJECT_NAME = "boardpass_current.pdf";
 
@@ -158,27 +147,18 @@ const AIRLINE_CODE = "HR";
 const FLIGHT_NUM = "HR-876";
 const GATE = "RIFT-3";
 
-// NEW: route details
-const ORIGIN = "BLOOMSBURG (BLM)";
-const DESTINATION = "WILKES-BARRE (AVP)";
+// Boarding time: NOW - 10 minutes
+const BOARDING_MODE = "NOW_PLUS_MIN"; // "NOW_PLUS_MIN" or "FIXED"
+const BOARDING_OFFSET_MIN = -10;
+const BOARDING_FIXED_TEXT = "6:10 PM";
 
-// Depart time behavior (separate from boarding)
-const DEPART_MODE = "NOW_PLUS_MIN";     // "NOW_PLUS_MIN" or "FIXED"
-const DEPART_OFFSET_MIN = 25;           // departs in 25 minutes
-const DEPART_FIXED_TEXT = "7:05 PM";    // used when FIXED
-const DATE_MODE = "TODAY";              // "TODAY" or "FIXED"
-const DATE_FIXED_TEXT = "JAN 11";       // used when FIXED
-
-// Boarding time behavior: NOW - 10 minutes
-const BOARDING_MODE = "NOW_PLUS_MIN";   // "NOW_PLUS_MIN" or "FIXED"
-const BOARDING_OFFSET_MIN = -10;        // now minus 10 mins
-const BOARDING_FIXED_TEXT = "6:10 PM";  // used when FIXED
-
-// Header strip color (purplish) and white text
+// Header strip (purplish)
 const HEADER_HEX = "#6B2BD1";
 
-// Load capacity puzzle: QR numbers sum to this total (unique, non-repeating within the group)
-const LOAD_CAPACITY_TOTAL = 1288;
+// Load Capacity puzzle
+const LOAD_CAP_TARGET = 1288;
+const LOAD_MIN = 90;
+const LOAD_MAX = 900;
 
 // Face crop tuning
 const FACE_W_MULT = 2.0;
@@ -189,9 +169,10 @@ const FACE_Y_SHIFT = 0.65;
 const statusEl = document.getElementById("status");
 const baseUrlEl = document.getElementById("baseUrl");
 const latestLink = document.getElementById("latestLink");
-const routeLineEl = document.getElementById("routeLine");
 const flightGateEl = document.getElementById("flightGate");
 const boardingCfgEl = document.getElementById("boardingCfg");
+const loadTargetUi = document.getElementById("loadTargetUi");
+const scanUrlUi = document.getElementById("scanUrlUi");
 
 const video = document.getElementById("cam");
 const preview = document.getElementById("preview");
@@ -206,25 +187,29 @@ const dimsEl = document.getElementById("dims");
 const facesEl = document.getElementById("faces");
 const slotsEl = document.getElementById("slots");
 
-const useQrEl = document.getElementById("useQr");
-
 /*** State ***/
 let snapshotImg = null;
 let snapshotDataUrl = null;
 let faceRects = [];
-let slots = []; // each slot: { seat, name, role, faceCanvas, loadCap }
+let slots = []; // [{ seat, name, role, faceCanvas, loadCap }]
+let scanBaseUrl = null;
 
 /*** Init UI ***/
 baseUrlEl.textContent = CLOUD_RUN_BASE;
 latestLink.href = LATEST_BOARDPASS_URL;
 latestLink.textContent = LATEST_BOARDPASS_URL;
-routeLineEl.textContent = `${ORIGIN} → ${DESTINATION}`;
 flightGateEl.textContent = `${FLIGHT_NUM}  |  Gate ${GATE}`;
 boardingCfgEl.textContent = (BOARDING_MODE === "NOW_PLUS_MIN")
   ? `Auto: now ${BOARDING_OFFSET_MIN >= 0 ? "+" : "−"} ${Math.abs(BOARDING_OFFSET_MIN)} min`
   : `Fixed: ${BOARDING_FIXED_TEXT}`;
+loadTargetUi.textContent = String(LOAD_CAP_TARGET);
+
+// scan.html URL (same repo)
+scanBaseUrl = new URL("scan.html", window.location.href).toString();
+scanUrlUi.textContent = scanBaseUrl;
 
 renderEmptySlots();
+setBanner("", "⏳ Ready. Start camera or choose an image.");
 
 /*** Helpers ***/
 function setBanner(type, msg){
@@ -244,28 +229,10 @@ function stopCamera(){
 function fmtTime(d){
   return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
-
-function fmtDateShort(d){
-  const m = d.toLocaleString("en-US", { month:"short" }).toUpperCase();
-  const day = String(d.getDate()).padStart(2,"0");
-  return `${m} ${day}`;
-}
-
 function getBoardingTimeText(){
   if (BOARDING_MODE === "FIXED") return BOARDING_FIXED_TEXT;
   const d = new Date(Date.now() + BOARDING_OFFSET_MIN * 60 * 1000);
   return fmtTime(d);
-}
-
-function getDepartTimeText(){
-  if (DEPART_MODE === "FIXED") return DEPART_FIXED_TEXT;
-  const d = new Date(Date.now() + DEPART_OFFSET_MIN * 60 * 1000);
-  return fmtTime(d);
-}
-
-function getDateText(){
-  if (DATE_MODE === "FIXED") return DATE_FIXED_TEXT;
-  return fmtDateShort(new Date());
 }
 
 function blobToBase64(blob){
@@ -403,9 +370,9 @@ function renderSlots(){
         <div>
           <label>Passenger name</label>
           <input type="text" data-idx="${i}" class="nameIn"
-            placeholder="${s ? ("PASSENGER " + (i+1)) : "Detect faces first"}"
-            ${s ? "" : "disabled"}
-            value="${s && s.name ? escapeHtml(s.name) : ""}"/>
+                 placeholder="${s ? ("PASSENGER " + (i+1)) : "Detect faces first"}"
+                 ${s ? "" : "disabled"}
+                 value="${s && s.name ? escapeHtml(s.name) : ""}"/>
         </div>
         <div>
           <label>Role (optional)</label>
@@ -443,75 +410,92 @@ function renderSlots(){
   makeBtn.disabled = !slots.some(s => !!s);
 }
 
-/*** Secure-ish random int (client-side) ***/
+/*** Load Capacity number generator (unique, random, sum = target) ***/
 function randInt(min, max){
-  min = Math.ceil(min); max = Math.floor(max);
-  if (max < min) [min, max] = [max, min];
-  const range = max - min + 1;
-  const u32 = new Uint32Array(1);
-  crypto.getRandomValues(u32);
-  return min + (u32[0] % range);
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
-
-/*** Generate unique Load Capacity values that sum to TOTAL ***/
-function generateUniqueCapacities(n, total){
+function shuffleInPlace(a){
+  for (let i=a.length-1;i>0;i--){
+    const j = Math.floor(Math.random() * (i+1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function genUniqueSum(n, total, minVal, maxVal){
   if (n <= 0) return [];
   if (n === 1) return [total];
 
-  // choose a reasonable range so numbers "feel" random but printable
-  const minVal = 50;
-  const maxVal = 900;
+  // Make sure constraints can work
+  if (total < n*minVal) throw new Error("LOAD target too small for min bounds");
+  if (total > n*maxVal) throw new Error("LOAD target too large for max bounds");
 
   for (let attempt=0; attempt<1200; attempt++){
     const vals = [];
     const used = new Set();
     let remaining = total;
+    let ok = true;
 
     for (let i=0; i<n-1; i++){
-      const remainingSlots = (n - i - 1);
+      const left = n - i - 1;
+      const minAfter = left * minVal;
+      const maxAfter = left * maxVal;
 
-      // keep room for remaining slots to be at least minVal each
-      const maxAllowed = remaining - (minVal * remainingSlots);
-      const hi = Math.min(maxVal, maxAllowed);
-      const lo = minVal;
+      const vMin = Math.max(minVal, remaining - maxAfter);
+      const vMax = Math.min(maxVal, remaining - minAfter);
+      if (vMin > vMax){ ok = false; break; }
 
-      if (hi < lo) break;
+      let picked = null;
+      for (let k=0; k<250; k++){
+        const cand = randInt(vMin, vMax);
+        if (used.has(cand)) continue;
 
-      let v = null;
-      for (let k=0; k<50; k++){
-        const candidate = randInt(lo, hi);
-        if (!used.has(candidate)){
-          v = candidate;
-          break;
+        // If this is the last pick before final remainder, ensure final is valid + unique + not equal
+        if (left === 1){
+          const last = remaining - cand;
+          if (last < minVal || last > maxVal) continue;
+          if (last === cand) continue;
+          if (used.has(last)) continue;
         }
+
+        picked = cand;
+        break;
       }
-      if (v === null) break;
 
-      vals.push(v);
-      used.add(v);
-      remaining -= v;
+      if (picked === null){ ok = false; break; }
+      vals.push(picked);
+      used.add(picked);
+      remaining -= picked;
     }
 
-    if (vals.length !== n-1) continue;
+    if (!ok) continue;
 
-    const last = total - vals.reduce((a,b)=>a+b, 0);
-    if (last >= minVal && last <= maxVal && !used.has(last)){
-      vals.push(last);
-      return vals;
-    }
+    const last = remaining;
+    if (last < minVal || last > maxVal) continue;
+    if (used.has(last)) continue;
+
+    vals.push(last);
+
+    if (new Set(vals).size !== n) continue;
+    return shuffleInPlace(vals);
   }
 
-  // fallback (guaranteed unique, sums correctly): evenly spread + distinct tweaks
+  // Fallback (should basically never hit)
+  // Simple deterministic unique spread
   const base = Math.floor(total / n);
   const vals = [];
-  for (let i=0;i<n;i++) vals.push(base + i); // unique
-  const sum = vals.reduce((a,b)=>a+b, 0);
-  vals[0] += (total - sum); // adjust to correct total
-  // ensure still unique
-  if (new Set(vals).size !== vals.length){
-    vals[0] -= 1; vals[1] += 1;
+  let sum = 0;
+  for (let i=0;i<n-1;i++){
+    vals.push(base + i);
+    sum += base + i;
   }
-  return vals;
+  vals.push(total - sum);
+  // Ensure uniqueness by nudging last if needed
+  const set = new Set(vals);
+  if (set.size !== n){
+    vals[n-1] += 1;
+    vals[n-2] -= 1;
+  }
+  return shuffleInPlace(vals);
 }
 
 /*** Camera / file ***/
@@ -661,7 +645,11 @@ detectBtn.onclick = async () => {
     }
 
     faceRects = faceRects.slice(0, MAX_PASSES);
-    setFaces(faceRects.length);
+    const n = faceRects.length;
+    setFaces(n);
+
+    // Generate unique load capacity values that sum to target (random, non-repeating)
+    const loadVals = genUniqueSum(n, LOAD_CAP_TARGET, LOAD_MIN, LOAD_MAX);
 
     slots = [];
     for (let i=0;i<MAX_PASSES;i++){
@@ -672,12 +660,13 @@ detectBtn.onclick = async () => {
         name: "",
         role: "Passenger",
         faceCanvas,
-        loadCap: null
+        loadCap: loadVals[i] // <-- key puzzle number
       });
     }
 
     renderSlots();
-    setBanner("ok", `✅ detected ${faceRects.length} passenger(s) — enter names (optional) then Generate`);
+    setBanner("ok", `✅ detected ${n} passenger(s) — names optional — Generate when ready`);
+    console.log("[loadCap] values:", loadVals, "sum:", loadVals.reduce((a,b)=>a+b,0));
   }catch(e){
     console.error(e);
     setBanner("err", "⚠️ detection failed — retake and try again.");
@@ -690,11 +679,10 @@ async function canvasToPngBytes(canvas){
   return await blob.arrayBuffer();
 }
 
-async function makeQrPngBytes(payloadText){
+async function makeQrPngBytes(payload){
   try{
     if (!window.QRCode || !QRCode.toDataURL) return null;
-    // IMPORTANT: payload is JUST the number as text
-    const dataUrl = await QRCode.toDataURL(String(payloadText), {
+    const dataUrl = await QRCode.toDataURL(payload, {
       errorCorrectionLevel: "M",
       margin: 1,
       width: 256
@@ -710,6 +698,13 @@ async function makeQrPngBytes(payloadText){
   }
 }
 
+// Load capacity QR should open a page that shows ONLY the number
+function buildLoadCapacityScanUrl(value){
+  const u = new URL(scanBaseUrl);
+  u.searchParams.set("n", String(value));
+  return u.toString();
+}
+
 // hex -> pdf-lib rgb (0..1)
 function hexToRgb01(hex){
   const h = hex.replace("#","").trim();
@@ -718,20 +713,6 @@ function hexToRgb01(hex){
   const g = (n >> 8) & 255;
   const b = n & 255;
   return { r: r/255, g: g/255, b: b/255 };
-}
-
-function assignLoadCaps(){
-  const active = [];
-  for (let i=0;i<MAX_PASSES;i++){
-    if (slots[i]) active.push(i);
-  }
-  const n = active.length;
-  const vals = generateUniqueCapacities(n, LOAD_CAPACITY_TOTAL);
-
-  for (let k=0;k<n;k++){
-    const idx = active[k];
-    slots[idx].loadCap = vals[k];
-  }
 }
 
 async function buildBoardPassPdfBytes(){
@@ -755,16 +736,10 @@ async function buildBoardPassPdfBytes(){
 
   page.drawRectangle({ x:0, y:0, width:pageW, height:pageH, color: rgb(1,1,1) });
 
-  const includeQr = !!useQrEl.checked;
-
   const headerRgb = hexToRgb01(HEADER_HEX);
   const headerFill = rgb(headerRgb.r, headerRgb.g, headerRgb.b);
   const white = rgb(1,1,1);
   const black = rgb(0.08,0.08,0.08);
-
-  const dateText = getDateText();
-  const departTime = getDepartTimeText();
-  const boardingTime = getBoardingTimeText();
 
   for (let i=0;i<MAX_PASSES;i++){
     const s = slots[i];
@@ -783,7 +758,7 @@ async function buildBoardPassPdfBytes(){
       color: rgb(1,1,1)
     });
 
-    // Header band: purple + white text + "BOARDING PASS"
+    // Header band: purple + white text
     const headerH = 40;
     page.drawRectangle({
       x, y: y + cellH - headerH, width: cellW, height: headerH,
@@ -824,10 +799,11 @@ async function buildBoardPassPdfBytes(){
     page.drawRectangle({ x: faceX - 1, y: faceY - 1, width: faceSize + 2, height: faceSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1 });
     page.drawImage(faceImg, { x: faceX, y: faceY, width: faceSize, height: faceSize });
 
-    // text fields
+    // passenger info
     const passengerName = (s.name && s.name.trim()) ? s.name.trim() : `PASSENGER ${i+1}`;
     const role = s.role || "Passenger";
     const seat = s.seat || SEATS[i];
+    const boardingTime = getBoardingTimeText();
 
     const infoX = faceX + faceSize + 12;
     const infoTopY = faceY + faceSize;
@@ -847,67 +823,58 @@ async function buildBoardPassPdfBytes(){
       page.drawText(v, { x: infoX + 70, y: yy, size: 11, font: fontB, color: black });
       yy -= lineH;
     };
-
-    field("FROM", ORIGIN);
-    field("TO", DESTINATION);
-    field("DATE", dateText);
-    field("DEPART", departTime);
-
-    // small divider
-    page.drawRectangle({ x: infoX, y: yy + 6, width: innerX + innerW - infoX, height: 1, borderColor: rgb(0.88,0.88,0.88), borderWidth: 1 });
-    yy -= 6;
-
     field("FLIGHT", FLIGHT_NUM);
     field("GATE", GATE);
     field("BOARD", boardingTime);
     field("SEAT", seat);
 
-    // lower divider
-    page.drawRectangle({ x: innerX, y: innerY + 70, width: innerW, height: 1, borderColor: rgb(0.85,0.85,0.85), borderWidth: 1 });
+    // divider
+    page.drawRectangle({ x: innerX, y: innerY + 86, width: innerW, height: 1, borderColor: rgb(0.88,0.88,0.88), borderWidth: 1 });
 
-    // code line (kept, but not the puzzle)
-    const codeLabelY = innerY + 52;
-    const shortCode = `${AIRLINE_CODE}-${seat}-${String(i+1).padStart(2,"0")}`;
-    page.drawText("CODE", { x: innerX, y: codeLabelY, size: 9, font, color: rgb(0.35,0.35,0.35) });
-    page.drawText(shortCode, { x: innerX + 42, y: codeLabelY, size: 12, font: fontB, color: black });
+    // LOAD CAPACITY QR (URL opens scan.html and shows only the number)
+    const scanUrl = buildLoadCapacityScanUrl(s.loadCap);
+    const qrBytes = await makeQrPngBytes(scanUrl);
 
-    // QR: Load Capacity (payload is ONLY the number)
-    if (includeQr){
-      const capVal = (typeof s.loadCap === "number") ? s.loadCap : 0;
-      const qrBytes = await makeQrPngBytes(String(capVal));
-      if (qrBytes){
-        const qr = await pdf.embedPng(qrBytes);
-        const qrSize = 76;
-        const qrX = innerX + innerW - qrSize;
-        const qrY = innerY + 8;
+    if (qrBytes){
+      const qr = await pdf.embedPng(qrBytes);
+      const qrSize = 76;
 
-        // label above QR
-        const label = "LOAD CAPACITY";
-        page.drawText(label, {
-          x: qrX + (qrSize/2) - (fontB.widthOfTextAtSize(label, 7)/2),
-          y: qrY + qrSize + 14,
-          size: 7,
-          font: fontB,
-          color: rgb(0.35,0.35,0.35)
-        });
+      // leave room for "LOAD CAPACITY" above + "scan" below
+      const qrX = innerX + innerW - qrSize;
+      const qrY = innerY + 14;
 
-        page.drawRectangle({ x: qrX - 1, y: qrY - 1, width: qrSize + 2, height: qrSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1 });
-        page.drawImage(qr, { x: qrX, y: qrY, width: qrSize, height: qrSize });
+      // label above
+      const label = "LOAD CAPACITY";
+      page.drawText(label, {
+        x: qrX + (qrSize/2) - (fontB.widthOfTextAtSize(label, 8)/2),
+        y: qrY + qrSize + 6,
+        size: 8,
+        font: fontB,
+        color: rgb(0.35,0.35,0.35)
+      });
 
-        // small "scan" under QR
-        const scanTxt = "scan";
-        page.drawText(scanTxt, {
-          x: qrX + (qrSize/2) - (font.widthOfTextAtSize(scanTxt, 7)/2),
-          y: qrY - 10,
-          size: 7,
-          font,
-          color: rgb(0.45,0.45,0.45)
-        });
-      }
+      // border + image
+      page.drawRectangle({ x: qrX - 1, y: qrY - 1, width: qrSize + 2, height: qrSize + 2, borderColor: rgb(0.15,0.15,0.15), borderWidth: 1 });
+      page.drawImage(qr, { x: qrX, y: qrY, width: qrSize, height: qrSize });
+
+      // "scan" under
+      const scanTxt = "scan";
+      page.drawText(scanTxt, {
+        x: qrX + (qrSize/2) - (font.widthOfTextAtSize(scanTxt, 8)/2),
+        y: qrY - 10,
+        size: 8,
+        font,
+        color: rgb(0.35,0.35,0.35)
+      });
     }
 
-    page.drawText("Valid for immediate boarding — keep this pass visible.", {
-      x: innerX, y: innerY + 10, size: 8, font, color: rgb(0.45,0.45,0.45)
+    // small note
+    page.drawText("Keep this pass visible.", {
+      x: innerX,
+      y: innerY + 10,
+      size: 8,
+      font,
+      color: rgb(0.45,0.45,0.45)
     });
   }
 
@@ -934,7 +901,7 @@ async function uploadPdfDirectToCloudRun(pdfBlob){
   if (!res.ok){
     throw new Error("upload failed: " + res.status + " " + txt);
   }
-  setBanner("ok", "✅ Uploaded. Latest BoardPass PDF is live at the room QR link.");
+  setBanner("ok", "✅ Uploaded. Latest BoardPass PDF is live at the link above.");
 }
 
 /*** Main generate ***/
@@ -944,9 +911,6 @@ makeBtn.onclick = async () => {
       setBanner("warn", "No passengers detected yet. Click Detect Passengers first.");
       return;
     }
-
-    // generate NEW load capacity values each time you generate
-    assignLoadCaps();
 
     setBanner("", "🧾 building PDF…");
     const pdfBytes = await buildBoardPassPdfBytes();
@@ -965,9 +929,6 @@ makeBtn.onclick = async () => {
     setBanner("err", "⚠️ Failed to generate/upload PDF. " + (e.message || ""));
   }
 };
-
-// initial banner
-setBanner("", "⏳ Ready. Start camera or choose an image.");
 </script>
 </body>
 </html>
