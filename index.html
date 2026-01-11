@@ -1,4 +1,4 @@
-<!-- FILE: index.html  (Boarding Pass Kiosk / GitHub Pages repo) -->
+<!-- FILE: index.html  (BoardPass Kiosk / GitHub Pages repo) -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -153,7 +153,7 @@ const CLOUD_RUN_BASE = "https://alien-face-service-791433334355.us-east4.run.app
 const DETECT_ENDPOINT = CLOUD_RUN_BASE + "/detectFaces";
 const UPLOAD_ENDPOINT = CLOUD_RUN_BASE + "/uploadPdfDirect";
 
-// ✅ CHANGE: BoardPass naming
+// BoardPass naming
 const LATEST_BOARDPASS_URL = CLOUD_RUN_BASE + "/boardpass_current";
 const TARGET_OBJECT_NAME = "boardpass_current.pdf";
 
@@ -166,15 +166,18 @@ const AIRLINE_CODE = "HR";
 const FLIGHT_NUM = "HR-876";     // change as desired
 const GATE = "RIFT-3";           // change as desired
 
-// Boarding time behavior
+// ✅ Boarding time behavior: NOW - 10 minutes
 const BOARDING_MODE = "NOW_PLUS_MIN"; // "NOW_PLUS_MIN" or "FIXED"
-const BOARDING_OFFSET_MIN = 10;       // used when NOW_PLUS_MIN
+const BOARDING_OFFSET_MIN = -10;      // <-- now minus 10 mins
 const BOARDING_FIXED_TEXT = "6:10 PM"; // used when FIXED
 
-// Face crop tuning (similar vibe to your menu app)
-const FACE_W_MULT = 2.0;   // expand around face box
+// ✅ Header strip color (purplish) and white text
+const HEADER_HEX = "#6B2BD1"; // purplish band
+
+// Face crop tuning
+const FACE_W_MULT = 2.0;
 const FACE_H_MULT = 2.2;
-const FACE_Y_SHIFT = 0.65; // shift crop upward (headroom)
+const FACE_Y_SHIFT = 0.65;
 
 /*** DOM refs ***/
 const statusEl = document.getElementById("status");
@@ -200,10 +203,10 @@ const useQrEl = document.getElementById("useQr");
 const puzzleCodeEl = document.getElementById("puzzleCode");
 
 /*** State ***/
-let snapshotImg = null;     // Image()
-let snapshotDataUrl = null; // data:image/jpeg;base64,...
-let faceRects = [];         // [{x,y,w,h}]
-let slots = [];             // [{ seat, name, role, faceCanvas }]
+let snapshotImg = null;
+let snapshotDataUrl = null;
+let faceRects = [];
+let slots = [];
 
 /*** Init UI ***/
 baseUrlEl.textContent = CLOUD_RUN_BASE;
@@ -211,7 +214,7 @@ latestLink.href = LATEST_BOARDPASS_URL;
 latestLink.textContent = LATEST_BOARDPASS_URL;
 flightGateEl.textContent = `${FLIGHT_NUM}  |  Gate ${GATE}`;
 boardingCfgEl.textContent = (BOARDING_MODE === "NOW_PLUS_MIN")
-  ? `Auto: now + ${BOARDING_OFFSET_MIN} min`
+  ? `Auto: now ${BOARDING_OFFSET_MIN >= 0 ? "+" : "−"} ${Math.abs(BOARDING_OFFSET_MIN)} min`
   : `Fixed: ${BOARDING_FIXED_TEXT}`;
 
 renderEmptySlots();
@@ -617,6 +620,16 @@ function buildQrPayload(passengerName, seat, role){
   return parts.join("|");
 }
 
+// hex -> pdf-lib rgb (0..1)
+function hexToRgb01(hex){
+  const h = hex.replace("#","").trim();
+  const n = parseInt(h.length === 3 ? h.split("").map(c=>c+c).join("") : h, 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return { r: r/255, g: g/255, b: b/255 };
+}
+
 async function buildBoardPassPdfBytes(){
   const { PDFDocument, StandardFonts, rgb } = PDFLib;
   const pdf = await PDFDocument.create();
@@ -624,8 +637,7 @@ async function buildBoardPassPdfBytes(){
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const fontB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-  // US Letter
-  const pageW = 612;
+  const pageW = 612;  // US Letter
   const pageH = 792;
   const page = pdf.addPage([pageW, pageH]);
 
@@ -641,12 +653,17 @@ async function buildBoardPassPdfBytes(){
 
   const includeQr = !!useQrEl.checked;
 
+  const headerRgb = hexToRgb01(HEADER_HEX);
+  const headerFill = rgb(headerRgb.r, headerRgb.g, headerRgb.b);
+  const white = rgb(1,1,1);
+  const black = rgb(0.08,0.08,0.08);
+
   for (let i=0;i<MAX_PASSES;i++){
     const s = slots[i];
     if (!s) continue;
 
     const col = i % 2;
-    const row = Math.floor(i / 2); // 0,1,2
+    const row = Math.floor(i / 2);
     const x = margin + col * (cellW + gapX);
     const y = pageH - margin - (row+1) * cellH - row * gapY;
 
@@ -654,20 +671,32 @@ async function buildBoardPassPdfBytes(){
     page.drawRectangle({
       x, y, width: cellW, height: cellH,
       borderColor: rgb(0.15,0.15,0.15),
-      borderWidth: 1
+      borderWidth: 1,
+      color: rgb(1,1,1)
     });
 
-    // header
+    // ✅ header band: purple + white text
     const headerH = 40;
-    page.drawRectangle({ x, y: y + cellH - headerH, width: cellW, height: headerH });
+    page.drawRectangle({
+      x, y: y + cellH - headerH, width: cellW, height: headerH,
+      color: headerFill
+    });
 
     page.drawText(AIRLINE_NAME.toUpperCase(), {
-      x: x + 12, y: y + cellH - 26, size: 12, font: fontB, color: rgb(0.08,0.08,0.08)
-    });
-    page.drawText("BOARDPASS", {
-      x: x + cellW - 12 - fontB.widthOfTextAtSize("BOARDPASS", 12),
+      x: x + 12,
       y: y + cellH - 26,
-      size: 12, font: fontB, color: rgb(0.08,0.08,0.08)
+      size: 12,
+      font: fontB,
+      color: white
+    });
+
+    const bpText = "BOARDING PASS";
+    page.drawText(bpText, {
+      x: x + cellW - 12 - fontB.widthOfTextAtSize(bpText, 12),
+      y: y + cellH - 26,
+      size: 12,
+      font: fontB,
+      color: white
     });
 
     // inner layout
@@ -701,14 +730,14 @@ async function buildBoardPassPdfBytes(){
     while (fontB.widthOfTextAtSize(nameText, 16) > maxNameWidth && nameText.length > 6){
       nameText = nameText.slice(0, -2) + "…";
     }
-    page.drawText(nameText, { x: infoX, y: infoTopY - 18, size: 16, font: fontB, color: rgb(0.05,0.05,0.05) });
+    page.drawText(nameText, { x: infoX, y: infoTopY - 18, size: 16, font: fontB, color: black });
     page.drawText(role.toUpperCase(), { x: infoX, y: infoTopY - 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
 
     const lineH = 14;
     let yy = infoTopY - 56;
     const field = (k,v) => {
       page.drawText(k, { x: infoX, y: yy, size: 10, font, color: rgb(0.35,0.35,0.35) });
-      page.drawText(v, { x: infoX + 70, y: yy, size: 11, font: fontB, color: rgb(0.08,0.08,0.08) });
+      page.drawText(v, { x: infoX + 70, y: yy, size: 11, font: fontB, color: black });
       yy -= lineH;
     };
     field("FLIGHT", FLIGHT_NUM);
@@ -723,12 +752,12 @@ async function buildBoardPassPdfBytes(){
     const shortCode = `${AIRLINE_CODE}-${seat}-${String(i+1).padStart(2,"0")}`;
 
     page.drawText("CODE", { x: innerX, y: codeLabelY, size: 9, font, color: rgb(0.35,0.35,0.35) });
-    page.drawText(shortCode, { x: innerX + 42, y: codeLabelY, size: 12, font: fontB, color: rgb(0.08,0.08,0.08) });
+    page.drawText(shortCode, { x: innerX + 42, y: codeLabelY, size: 12, font: fontB, color: black });
 
     const puzzle = (puzzleCodeEl.value || "").trim();
     if (puzzle){
       page.drawText("PUZZLE", { x: innerX, y: innerY + 34, size: 9, font, color: rgb(0.35,0.35,0.35) });
-      page.drawText(puzzle, { x: innerX + 42, y: innerY + 34, size: 11, font: fontB, color: rgb(0.08,0.08,0.08) });
+      page.drawText(puzzle, { x: innerX + 42, y: innerY + 34, size: 11, font: fontB, color: black });
     }
 
     if (includeQr){
@@ -788,13 +817,11 @@ makeBtn.onclick = async () => {
 
     await uploadPdfDirectToCloudRun(blob);
 
-    // download for printing
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "boardpass_current.pdf";
     a.click();
 
-    // open for printing
     try{ window.open(a.href, "_blank", "noopener,noreferrer"); }catch(e){}
   }catch(e){
     console.error(e);
