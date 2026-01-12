@@ -40,6 +40,9 @@
   }
   .kv{ display:grid; grid-template-columns: 190px 1fr; gap:8px 10px; align-items:center; }
   .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  input[type=text], select{
+    width:100%; padding:9px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.18); font-size:14px; background:#fff;
+  }
   .grid{
     display:grid; grid-template-columns: repeat(3, minmax(0, 1fr));
     gap:12px;
@@ -59,13 +62,11 @@
   .slotTop{ display:flex; justify-content:space-between; gap:10px; align-items:center; }
   .pill{
     font-size:12px; padding:3px 8px; border-radius:999px; border:1px solid rgba(0,0,0,.12); background:#fff;
+    white-space:nowrap;
   }
   .pill.seat{ font-weight:700; }
   .pill.empty{ background:#fff; color:var(--muted); }
   label{ font-size:12px; color:var(--muted); display:block; margin-bottom:4px; }
-  input[type=text], select{
-    width:100%; padding:9px 10px; border-radius:10px; border:1px solid rgba(0,0,0,.18); font-size:14px; background:#fff;
-  }
   .tiny{ font-size:12px; color:var(--muted); }
   .hr{ height:1px; background:rgba(0,0,0,.08); margin:10px 0; }
   .linkLine{ font-size:13px; color:var(--muted); }
@@ -82,11 +83,20 @@
 
   <div class="panel">
     <div class="kv">
+      <div>Mode</div>
+      <div>
+        <select id="modeSel">
+          <option value="mode1">Mode 1 — Mechanical Failure</option>
+          <option value="mode2">Mode 2 — Bomb</option>
+        </select>
+        <div class="tiny" id="modeHint" style="margin-top:6px;">Mode 1: add QR values to reach <b>1288</b>.</div>
+      </div>
+
       <div>Cloud Run Base</div><div class="mono" id="baseUrl">—</div>
       <div>Latest BoardPass PDF</div><div class="linkLine"><a id="latestLink" href="#" target="_blank" rel="noreferrer">—</a></div>
       <div>Flight / Gate</div><div><span class="mono" id="flightGate">—</span></div>
       <div>Boarding time</div><div><span class="mono" id="boardingCfg">—</span></div>
-      <div>Load Capacity Target</div><div><span class="mono" id="loadTargetUi">—</span> <span class="tiny">(scan each pass QR, add values)</span></div>
+      <div>Target code</div><div><span class="mono" id="loadTargetUi">—</span> <span class="tiny" id="targetExplain"></span></div>
     </div>
   </div>
 
@@ -120,7 +130,7 @@
     <button id="make" disabled>Generate BoardPass PDF</button>
   </div>
 
-  <div class="tiny">Tip: most camera/QR apps will display the scanned numeric payload as a big number automatically.</div>
+  <div class="tiny">Tip: most camera/QR apps show the numeric payload large automatically. Use the ticket’s +/− (Mode 2) for the math.</div>
 </main>
 
 <!-- pdf-lib for PDF export -->
@@ -154,10 +164,16 @@ const BOARDING_FIXED_TEXT = "6:10 PM";
 // Header strip (purplish)
 const HEADER_HEX = "#6B2BD1";
 
-// Load Capacity puzzle
-const LOAD_CAP_TARGET = 1288;
-const LOAD_MIN = 90;
-const LOAD_MAX = 900;
+// Mode puzzle targets
+const MODE1_TARGET = 1288; // Mode 1: plain sum
+const MODE2_TARGET = 2386; // Mode 2: signed sum (+ / -)
+
+// Number bounds
+const MODE1_MIN = 90;
+const MODE1_MAX = 900;
+
+const MODE2_MIN = 90;
+const MODE2_MAX = 2500; // supports 1–6 players hitting 2386 reliably
 
 // Face crop tuning
 const FACE_W_MULT = 2.0;
@@ -166,11 +182,15 @@ const FACE_Y_SHIFT = 0.65;
 
 /*** DOM refs ***/
 const statusEl = document.getElementById("status");
+const modeSel = document.getElementById("modeSel");
+const modeHint = document.getElementById("modeHint");
+
 const baseUrlEl = document.getElementById("baseUrl");
 const latestLink = document.getElementById("latestLink");
 const flightGateEl = document.getElementById("flightGate");
 const boardingCfgEl = document.getElementById("boardingCfg");
 const loadTargetUi = document.getElementById("loadTargetUi");
+const targetExplain = document.getElementById("targetExplain");
 
 const video = document.getElementById("cam");
 const preview = document.getElementById("preview");
@@ -189,7 +209,7 @@ const slotsEl = document.getElementById("slots");
 let snapshotImg = null;
 let snapshotDataUrl = null;
 let faceRects = [];
-let slots = []; // [{ seat, name, role, faceCanvas, loadCap }]
+let slots = []; // slots[i] is either null or { seat, name, role, faceCanvas, loadCap, loadOp }
 
 /*** Init UI ***/
 baseUrlEl.textContent = CLOUD_RUN_BASE;
@@ -199,10 +219,10 @@ flightGateEl.textContent = `${FLIGHT_NUM}  |  Gate ${GATE}`;
 boardingCfgEl.textContent = (BOARDING_MODE === "NOW_PLUS_MIN")
   ? `Auto: now ${BOARDING_OFFSET_MIN >= 0 ? "+" : "−"} ${Math.abs(BOARDING_OFFSET_MIN)} min`
   : `Fixed: ${BOARDING_FIXED_TEXT}`;
-loadTargetUi.textContent = String(LOAD_CAP_TARGET);
 
 renderEmptySlots();
 setBanner("", "⏳ Ready. Start camera or choose an image.");
+syncModeUi();
 
 /*** Helpers ***/
 function setBanner(type, msg){
@@ -298,6 +318,55 @@ function cropFaceToCanvas(imgEl, rect, outW=520, outH=520){
   return c;
 }
 
+/*** Mode UI + reseed puzzle values (keeps faces/names) ***/
+function getMode(){ return modeSel.value; }
+
+function syncModeUi(){
+  const m = getMode();
+  if (m === "mode2"){
+    loadTargetUi.textContent = String(MODE2_TARGET);
+    targetExplain.textContent = "(use +/− on each ticket)";
+    modeHint.innerHTML = `Mode 2: use the ticket’s <b>+ / −</b> with QR values to reach <b>${MODE2_TARGET}</b>.`;
+  } else {
+    loadTargetUi.textContent = String(MODE1_TARGET);
+    targetExplain.textContent = "(add QR values)";
+    modeHint.innerHTML = `Mode 1: add QR values to reach <b>${MODE1_TARGET}</b>.`;
+  }
+}
+
+function reseedPuzzleForCurrentMode(){
+  const n = slots.filter(s => !!s).length;
+  if (!n) return;
+
+  const m = getMode();
+  if (m === "mode2"){
+    const signed = genSignedSum(n, MODE2_TARGET, MODE2_MIN, MODE2_MAX, true);
+    let k = 0;
+    for (let i=0;i<MAX_PASSES;i++){
+      if (!slots[i]) continue;
+      slots[i].loadCap = signed[k].value;
+      slots[i].loadOp = signed[k].op;
+      k++;
+    }
+  } else {
+    const vals = genUniqueSum(n, MODE1_TARGET, MODE1_MIN, MODE1_MAX);
+    let k = 0;
+    for (let i=0;i<MAX_PASSES;i++){
+      if (!slots[i]) continue;
+      slots[i].loadCap = vals[k];
+      slots[i].loadOp = ""; // no sign shown for Mode 1
+      k++;
+    }
+  }
+}
+
+modeSel.addEventListener("change", ()=>{
+  syncModeUi();
+  reseedPuzzleForCurrentMode();
+  renderSlots();
+});
+
+/*** Slots UI ***/
 function renderEmptySlots(){
   slotsEl.innerHTML = "";
   for (let i=0;i<MAX_PASSES;i++){
@@ -340,6 +409,8 @@ function escapeHtml(s){
 
 function renderSlots(){
   slotsEl.innerHTML = "";
+  const m = getMode();
+
   for (let i=0;i<MAX_PASSES;i++){
     const seat = SEATS[i];
     const s = slots[i] || null;
@@ -353,12 +424,16 @@ function renderSlots(){
               fill='%23999' font-family='system-ui' font-size='12'>EMPTY</text>
       </svg>`;
 
+    const lcText = s
+      ? (m === "mode2" ? `LC ${s.loadOp}${s.loadCap}` : `LC ${s.loadCap}`)
+      : "No face";
+
     div.innerHTML = `
       <img class="thumb" alt="face" src="${thumbSrc}"/>
       <div class="slotMeta">
         <div class="slotTop">
           <span class="pill seat">Seat ${seat}</span>
-          <span class="pill ${s ? "" : "empty"}">${s ? "Detected" : "No face"}</span>
+          <span class="pill ${s ? "" : "empty"}">${lcText}</span>
         </div>
         <div>
           <label>Passenger name</label>
@@ -403,7 +478,7 @@ function renderSlots(){
   makeBtn.disabled = !slots.some(s => !!s);
 }
 
-/*** Load Capacity number generator (unique, random, sum = target) ***/
+/*** Random helpers + puzzle generators ***/
 function randInt(min, max){
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
@@ -414,12 +489,14 @@ function shuffleInPlace(a){
   }
   return a;
 }
+
+// Mode 1: unique values, sum = target
 function genUniqueSum(n, total, minVal, maxVal){
   if (n <= 0) return [];
   if (n === 1) return [total];
 
-  if (total < n*minVal) throw new Error("LOAD target too small for min bounds");
-  if (total > n*maxVal) throw new Error("LOAD target too large for max bounds");
+  if (total < n*minVal) throw new Error("target too small for bounds");
+  if (total > n*maxVal) throw new Error("target too large for bounds");
 
   for (let attempt=0; attempt<1200; attempt++){
     const vals = [];
@@ -479,6 +556,73 @@ function genUniqueSum(n, total, minVal, maxVal){
   }
   vals.push(total - sum);
   return shuffleInPlace(vals);
+}
+
+// Mode 2: unique values + random +/- ops, signed sum = target
+function genSignedSum(n, target, minVal, maxVal, requireBothSigns){
+  if (n <= 0) return [];
+  if (n === 1){
+    // must be "+"
+    return [{ op:"+", value: target }];
+  }
+
+  for (let attempt=0; attempt<4000; attempt++){
+    // pick ops
+    const ops = Array.from({length:n}, ()=> (Math.random() < 0.5 ? "+" : "-"));
+    if (requireBothSigns){
+      const hasPlus = ops.includes("+");
+      const hasMinus = ops.includes("-");
+      if (!hasPlus || !hasMinus) continue;
+    }
+
+    // generate first n-1 values
+    const used = new Set();
+    const values = [];
+    let partial = 0;
+
+    for (let i=0;i<n-1;i++){
+      let v = null;
+      for (let k=0;k<400;k++){
+        const cand = randInt(minVal, maxVal);
+        if (used.has(cand)) continue;
+        v = cand;
+        break;
+      }
+      if (v === null){ values.length = 0; break; }
+      used.add(v);
+      values.push(v);
+      partial += (ops[i] === "+" ? v : -v);
+    }
+    if (values.length !== n-1) continue;
+
+    // compute last value needed
+    const needed = target - partial;
+    const lastOp = ops[n-1];
+    const lastVal = (lastOp === "+") ? needed : -needed;
+
+    if (!Number.isFinite(lastVal)) continue;
+    if (!Number.isInteger(lastVal)) continue;
+    if (lastVal < minVal || lastVal > maxVal) continue;
+    if (used.has(lastVal)) continue;
+
+    values.push(lastVal);
+
+    // build list (shuffle together so the +/− feel random per seat)
+    const pairs = [];
+    for (let i=0;i<n;i++){
+      pairs.push({ op: ops[i], value: values[i] });
+    }
+    return shuffleInPlace(pairs);
+  }
+
+  // fallback (no requirement of both signs)
+  if (requireBothSigns){
+    return genSignedSum(n, target, minVal, maxVal, false);
+  }
+
+  // extreme fallback: all plus, unique sum=target
+  const vals = genUniqueSum(n, target, minVal, maxVal);
+  return vals.map(v => ({ op:"+", value:v }));
 }
 
 /*** Camera / file ***/
@@ -631,8 +775,7 @@ detectBtn.onclick = async () => {
     const n = faceRects.length;
     setFaces(n);
 
-    const loadVals = genUniqueSum(n, LOAD_CAP_TARGET, LOAD_MIN, LOAD_MAX);
-
+    // build slots (faces first)
     slots = [];
     for (let i=0;i<MAX_PASSES;i++){
       if (!faceRects[i]) { slots.push(null); continue; }
@@ -642,9 +785,13 @@ detectBtn.onclick = async () => {
         name: "",
         role: "Passenger",
         faceCanvas,
-        loadCap: loadVals[i]
+        loadCap: 0,
+        loadOp: ""
       });
     }
+
+    // assign puzzle values per mode (keeps faces/names)
+    reseedPuzzleForCurrentMode();
 
     renderSlots();
     setBanner("ok", `✅ detected ${n} passenger(s) — names optional — Generate when ready`);
@@ -696,7 +843,7 @@ function fitText(font, size, text, maxWidth){
   return t;
 }
 
-/*** PDF generation (clean layout: bottom-left name/role, bottom-right fields; no overlaps; no "keep visible") ***/
+/*** PDF generation (layout you approved: bottom-left name/role, bottom-right fields; QR top-right; sign only in Mode 2) ***/
 async function buildBoardPassPdfBytes(){
   const { PDFDocument, StandardFonts, rgb } = PDFLib;
   const pdf = await PDFDocument.create();
@@ -724,6 +871,9 @@ async function buildBoardPassPdfBytes(){
   const black = rgb(0.08,0.08,0.08);
   const gray = rgb(0.35,0.35,0.35);
   const lightLine = rgb(0.86,0.86,0.86);
+
+  const mode = getMode();
+  const showSigns = (mode === "mode2");
 
   for (let i=0;i<MAX_PASSES;i++){
     const s = slots[i];
@@ -817,6 +967,28 @@ async function buildBoardPassPdfBytes(){
       });
     }
 
+    // Mode 2 ONLY: big + / − in the blank space between photo and QR (no overlap)
+    if (showSigns){
+      const op = (s.loadOp === "-" ? "-" : "+");
+      const opSize = 44;
+      const gapLeft = faceX + faceSize + 10;
+      const gapRight = qrX - 10;
+      const gapW = Math.max(10, gapRight - gapLeft);
+
+      // center it in the gap
+      const opW = fontB.widthOfTextAtSize(op, opSize);
+      const opX = gapLeft + Math.max(0, (gapW - opW) / 2);
+      const opY = topRowTop + Math.max(0, (topRowH - opSize) / 2);
+
+      page.drawText(op, {
+        x: opX,
+        y: opY,
+        size: opSize,
+        font: fontB,
+        color: rgb(0.12,0.12,0.12)
+      });
+    }
+
     // divider line BELOW top area
     const dividerY = topRowTop - 10;
     page.drawRectangle({ x: innerX, y: dividerY, width: innerW, height: 1, borderColor: lightLine, borderWidth: 1 });
@@ -826,13 +998,12 @@ async function buildBoardPassPdfBytes(){
     const bottomLeftX = innerX;
     const bottomRightX = innerX + Math.floor(innerW * 0.52) + 10;
     const bottomLeftW = bottomRightX - 10 - bottomLeftX;
-    const bottomRightW = (innerX + innerW) - bottomRightX;
 
     const passengerName = (s.name && s.name.trim()) ? s.name.trim() : `PASSENGER ${i+1}`;
     const role = (s.role || "Passenger").toUpperCase();
 
-    // Left side (name + role) — under the line
-    const nameSize = 14;      // reduced a bit
+    // Left side (name + role)
+    const nameSize = 14;
     const roleSize = 10;
 
     const nameText = fitText(fontB, nameSize, passengerName.toUpperCase(), bottomLeftW);
@@ -853,13 +1024,13 @@ async function buildBoardPassPdfBytes(){
       color: gray
     });
 
-    // Right side fields — under the line
+    // Right side fields
     const keySize = 9;
     const valSize = 11;
     const lineH = 13;
 
     const keyX = bottomRightX;
-    const valX = bottomRightX + 52; // tighter so it fits
+    const valX = bottomRightX + 52;
     const maxValW = Math.max(40, (innerX + innerW) - valX);
 
     let yy = bottomTop;
@@ -878,8 +1049,6 @@ async function buildBoardPassPdfBytes(){
     field("GATE", GATE);
     field("BOARD", boardingTime);
     field("SEAT", seat);
-
-    // (Removed: "Keep this pass visible.")
   }
 
   return await pdf.save();
